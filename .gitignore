@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+build/
+# local runtime data (audit log, notes) — never commit
+data/
+.assistant/
