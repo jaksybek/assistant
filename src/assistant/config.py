@@ -103,11 +103,34 @@ def default_settings() -> Settings:
             "scratch_save_note": Capability.WRITE,
             # Irreversible. Gated every single time, in every mode.
             "scratch_delete_note": Capability.EXTERNAL,
+            # Mail is read-only by construction — there is no send tool to
+            # classify, and the server opens the mailbox readonly.
+            "mail_list_messages": Capability.READ,
+            "mail_search_messages": Capability.READ,
+            "mail_read_message": Capability.READ,
         },
-        # A note can contain anything — including text pasted from an email.
-        # Reading one is the same trust problem as reading the email directly.
-        untrusted_output={"scratch_read_note"},
+        # Output written by someone other than the user. Reading any of these
+        # taints the session: writes stop being automatic. A note counts —
+        # it can contain text pasted out of an email.
+        untrusted_output={
+            "scratch_read_note",
+            "mail_list_messages",
+            "mail_search_messages",
+            "mail_read_message",
+        },
     )
+
+    # Mail only starts if it has been configured. An unconfigured integration
+    # is an absent one, not a broken one.
+    if os.environ.get("MAIL_IMAP_HOST"):
+        settings.servers.append(
+            MCPServer(
+                name="mail",
+                command=sys.executable,
+                args=["-m", "assistant.servers.mail.server"],
+            )
+        )
+
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.sandbox_dir.mkdir(parents=True, exist_ok=True)
     return settings
