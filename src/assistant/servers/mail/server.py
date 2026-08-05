@@ -65,6 +65,10 @@ def _mailbox() -> Iterator[imaplib.IMAP4_SSL]:
     conn = imaplib.IMAP4_SSL(host, port)
     try:
         conn.login(user, password)
+        # Folder names containing spaces (e.g. "[Gmail]/All Mail") must be
+        # quoted or IMAP parses only the first word.
+        if " " in folder and not folder.startswith('"'):
+            folder = f'"{folder}"'
         # readonly=True is the structural guarantee: the server cannot mark,
         # move, or delete anything, regardless of what the agent asks for.
         conn.select(folder, readonly=True)
