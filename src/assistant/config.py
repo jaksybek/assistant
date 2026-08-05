@@ -5,11 +5,21 @@ can call is classified into one of three tiers, in code the model cannot talk
 its way past:
 
     READ      — observes the world, changes nothing. Runs freely.
-    WRITE     — changes state, but reversibly and inside the sandbox. Runs
-                freely on trusted context; gated once untrusted content has
-                been read (see approvals.py).
+    APPEND    — adds to the sandbox without replacing anything. Cannot destroy,
+                so it runs freely even on untrusted context. This is what lets
+                the agent keep a durable log of what it read.
+    WRITE     — replaces or removes sandbox state. Reversible in principle, but
+                it can destroy. Runs freely on trusted context; gated once
+                untrusted content has been read (see approvals.py).
     EXTERNAL  — irreversible, or leaves this machine. ALWAYS gated, in every
                 mode, no exceptions.
+
+The APPEND/WRITE split exists because taint was gating the wrong thing. Reading
+mail necessarily taints the session, so an unattended "triage my inbox and note
+what matters" could never finish — the note write queued forever and the agent
+forgot everything by morning. Appending is strictly additive: the worst a
+prompt injection achieves is noise in a log the user can read, bounded by
+max_tool_calls. Overwriting is a different matter and stays gated.
 
 That split is what lets the agent be genuinely independent without being
 dangerous: it acts on its own across the entire reversible surface, and the
@@ -35,6 +45,7 @@ class Capability(str, Enum):
     """What a tool can do to the world. Drives the approval decision."""
 
     READ = "read"
+    APPEND = "append"
     WRITE = "write"
     EXTERNAL = "external"
 
@@ -99,7 +110,10 @@ def default_settings() -> Settings:
             "scratch_now": Capability.READ,
             "scratch_list_notes": Capability.READ,
             "scratch_read_note": Capability.READ,
-            # Reversible and sandboxed — the agent does this on its own.
+            "scratch_search_notes": Capability.READ,
+            # Strictly additive — safe even after reading untrusted content.
+            "scratch_append_note": Capability.APPEND,
+            # Replaces the whole note, so it can destroy. Gated once tainted.
             "scratch_save_note": Capability.WRITE,
             # Irreversible. Gated every single time, in every mode.
             "scratch_delete_note": Capability.EXTERNAL,
@@ -115,6 +129,7 @@ def default_settings() -> Settings:
         # it can contain text pasted out of an email.
         untrusted_output={
             "scratch_read_note",
+            "scratch_search_notes",
             "mail_list_messages",
             "mail_search_messages",
             "mail_read_message",

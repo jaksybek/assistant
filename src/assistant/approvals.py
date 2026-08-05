@@ -79,6 +79,12 @@ class ApprovalGate:
         if cap is Capability.READ:
             return Verdict(Decision.ALLOW, cap, "read-only")
 
+        if cap is Capability.APPEND:
+            # Additive and sandboxed: it cannot destroy anything, so taint does
+            # not change the answer. Without this, an unattended agent could
+            # never record what it read — the note write would queue forever.
+            return Verdict(Decision.ALLOW, cap, "additive, cannot destroy")
+
         if cap is Capability.WRITE:
             if self.tainted_by is None:
                 return Verdict(Decision.ALLOW, cap, "reversible write, context is clean")

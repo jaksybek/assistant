@@ -62,11 +62,51 @@ def read_note(name: str) -> str:
 
 
 @mcp.tool()
+def search_notes(query: str, limit: int = 30) -> str:
+    """Search across every note for a phrase, returning the matching lines and
+    which note each came from. Use this to recall prior context before starting
+    a task, rather than reading notes one by one."""
+    needle = query.strip().lower()
+    if not needle:
+        return "Provide something to search for."
+    limit = max(1, min(limit, 100))
+
+    hits: list[str] = []
+    for path in sorted(SANDBOX.glob("*.md")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            if needle in line.lower():
+                hits.append(f"{path.stem}:{number}: {line.strip()}")
+                if len(hits) >= limit:
+                    return "\n".join(hits) + f"\n[stopped at {limit} matches]"
+    return "\n".join(hits) if hits else f"No notes mention {query!r}."
+
+
+@mcp.tool()
 def save_note(name: str, content: str) -> str:
-    """Save a note under the given name, replacing it if it already exists."""
+    """Save a note under the given name, REPLACING it if it already exists.
+    To add to a note without losing what is there, use append_note."""
     path = _resolve(name)
     path.write_text(content, encoding="utf-8")
     return f"Saved '{name}' ({len(content)} characters)."
+
+
+@mcp.tool()
+def append_note(name: str, content: str) -> str:
+    """Add to the end of a note under a timestamped heading, creating it if it
+    does not exist. Preferred over save_note for anything accumulating over
+    time — a running log, a digest, notes on a project."""
+    path = _resolve(name)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    entry = f"\n\n## {stamp}\n\n{content.strip()}\n"
+    existed = path.exists()
+    with path.open("a", encoding="utf-8") as f:
+        f.write(entry)
+    verb = "Appended to" if existed else "Created"
+    return f"{verb} '{name}' (+{len(entry)} characters)."
 
 
 @mcp.tool()
