@@ -108,6 +108,7 @@ def default_settings() -> Settings:
             "mail_list_messages": Capability.READ,
             "mail_search_messages": Capability.READ,
             "mail_read_message": Capability.READ,
+            "mail_read_recent": Capability.READ,
         },
         # Output written by someone other than the user. Reading any of these
         # taints the session: writes stop being automatic. A note counts —
@@ -117,6 +118,7 @@ def default_settings() -> Settings:
             "mail_list_messages",
             "mail_search_messages",
             "mail_read_message",
+            "mail_read_recent",
         },
     )
 
