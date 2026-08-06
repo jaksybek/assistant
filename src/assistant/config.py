@@ -112,10 +112,12 @@ def default_settings() -> Settings:
             "notes_list_notes": Capability.READ,
             "notes_read": Capability.READ,
             "notes_search": Capability.READ,
+            "notes_backlinks": Capability.READ,
             # Strictly additive — safe even after reading untrusted content.
             "notes_append": Capability.APPEND,
-            # Replaces the whole note, so it can destroy. Gated once tainted.
+            # These can destroy or displace, so they gate once tainted.
             "notes_save": Capability.WRITE,
+            "notes_move": Capability.WRITE,
             # Irreversible. Gated every single time, in every mode.
             "notes_delete": Capability.EXTERNAL,
             # Mail is read-only by construction — there is no send tool to

@@ -77,7 +77,7 @@ def now() -> str:
 
 
 @mcp.tool()
-def outline(folder: str = "", depth: int = 2) -> str:
+def outline(folder: str = "", depth: int = 3) -> str:
     """Show the SHAPE of the knowledge base — folders, note names and sizes,
     with no content. Start here: it is by far the cheapest way to find out what
     exists and decide where to look, before spending anything on reading."""
@@ -187,6 +187,52 @@ def save(path: str, content: str) -> str:
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(content, encoding="utf-8")
     return f"Saved '{path}' ({len(content)} chars)."
+
+
+@mcp.tool()
+def backlinks(path: str) -> str:
+    """Find every note that links to this one with [[wikilink]] syntax. Use it
+    before moving or deleting a note, to see what would be left dangling."""
+    target = _resolve(path)
+    name = _rel(target)
+    stem = target.stem
+    hits: list[str] = []
+    for file in sorted(SANDBOX.rglob("*.md")):
+        if file == target:
+            continue
+        try:
+            lines = file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            if f"[[{name}]]" in line or f"[[{stem}]]" in line:
+                hits.append(f"{_rel(file)}:{number}: {line.strip()[:200]}")
+    return "\n".join(hits) if hits else f"Nothing links to '{path}'."
+
+
+@mcp.tool()
+def move(path: str, to: str) -> str:
+    """Move or rename a note, creating the destination folder if needed. Use
+    this to regroup notes as the tree takes shape. Refuses to overwrite an
+    existing note — delete the target deliberately first if that is the intent."""
+    source = _resolve(path)
+    target = _resolve(to)
+    if not source.exists():
+        return f"No note at '{path}'."
+    if target.exists():
+        return f"'{to}' already exists — refusing to overwrite it."
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+
+    # Tidy up folders the move emptied, so the tree does not accumulate husks.
+    parent = source.parent
+    while parent != SANDBOX and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+    stale = backlinks(to)
+    note = "" if stale.startswith("Nothing links") else f"\nLinks now pointing at the old path:\n{stale}"
+    return f"Moved '{path}' to '{to}'.{note}"
 
 
 @mcp.tool()
