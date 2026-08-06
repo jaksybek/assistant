@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run the security test suite
+        run: uv run pytest -q
+
+      # The whole design depends on secrets never entering the repo. A commit
+      # that adds one should fail here rather than be found later.
+      - name: Check no secrets were committed
+        run: |
+          if git ls-files | grep -qx '.env'; then
+            echo "::error::.env is tracked — it must stay gitignored"; exit 1
+          fi
+          if git grep -nIE 'sk-ant-[A-Za-z0-9_-]{20,}' -- ':!*.example' ':!.github'; then
+            echo "::error::an API key appears in the source"; exit 1
+          fi

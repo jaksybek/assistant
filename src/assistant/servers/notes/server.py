@@ -47,11 +47,13 @@ def _resolve(path: str) -> Path:
     This is the containment boundary. Accepts nested paths like
     'projects/elfathlon/baseline'; rejects anything that escapes the tree.
     """
-    cleaned = path.strip().strip("/")
+    cleaned = path.strip()
     if not cleaned:
         raise ValueError("A note path is required.")
-    if "\x00" in cleaned:
-        raise ValueError("Invalid note path.")
+    if cleaned.startswith("/") or "\x00" in cleaned:
+        # Refuse rather than silently reinterpreting '/etc/passwd' as a note
+        # called 'etc/passwd'. Contained either way, but surprising.
+        raise ValueError(f"'{path}' must be a relative note path.")
     candidate = (SANDBOX / f"{cleaned}.md").resolve()
     if not candidate.is_relative_to(SANDBOX):
         raise ValueError(f"'{path}' escapes the notes directory")

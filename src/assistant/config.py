@@ -37,8 +37,19 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-# Runtime data (audit log, notes, pending approvals). Gitignored.
-DATA_DIR = Path(os.environ.get("ASSISTANT_DATA_DIR", "./data")).resolve()
+def _data_dir() -> Path:
+    """Runtime data (audit log, notes, pending approvals). Gitignored.
+
+    Read at construction rather than import, so the environment still decides
+    after this module has been imported — which tests rely on, and which avoids
+    a module-level constant that silently freezes configuration.
+    """
+    return Path(os.environ.get("ASSISTANT_DATA_DIR", "./data")).expanduser().resolve()
+
+
+def _sandbox_dir() -> Path:
+    override = os.environ.get("ASSISTANT_SANDBOX_DIR")
+    return Path(override).expanduser().resolve() if override else _data_dir() / "sandbox"
 
 
 class Capability(str, Enum):
@@ -66,17 +77,13 @@ class Settings:
     effort: str = field(default_factory=lambda: os.environ.get("ASSISTANT_EFFORT", "high"))
     max_tokens: int = 16000
 
-    data_dir: Path = DATA_DIR
-    audit_path: Path = DATA_DIR / "audit.jsonl"
-    pending_path: Path = DATA_DIR / "pending.json"
+    data_dir: Path = field(default_factory=_data_dir)
+    audit_path: Path = field(default_factory=lambda: _data_dir() / "audit.jsonl")
+    pending_path: Path = field(default_factory=lambda: _data_dir() / "pending.json")
     # The ONLY directory the agent may write to. Never your whole disk.
     # Point this at a subfolder of an Obsidian vault to keep one knowledge base
     # while still confining the agent to its own corner of it.
-    sandbox_dir: Path = field(
-        default_factory=lambda: Path(
-            os.environ.get("ASSISTANT_SANDBOX_DIR") or DATA_DIR / "sandbox"
-        ).expanduser().resolve()
-    )
+    sandbox_dir: Path = field(default_factory=_sandbox_dir)
 
     # interactive: a human is present, so gated actions prompt on the terminal.
     # autonomous:  nobody is watching, so gated actions queue for later review
