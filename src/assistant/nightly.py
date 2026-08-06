@@ -30,7 +30,7 @@ SWEEP = (
     "Sweep my mail from the last 24 hours. First search your notes for context "
     "on anything recurring or already settled, so you do not re-raise questions "
     "I have answered. Then tell me what actually needs me and what is noise, and "
-    "append the triage to the note 'inbox-log'. Be brief and concrete."
+    "append the triage to the note 'mail/inbox-log'. Be brief and concrete."
 )
 
 

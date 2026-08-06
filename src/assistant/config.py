@@ -99,24 +99,25 @@ def default_settings() -> Settings:
     settings = Settings(
         servers=[
             MCPServer(
-                name="scratch",
+                name="notes",
                 # Launch the server with the same interpreter running the agent,
                 # so it shares this project's virtualenv.
                 command=sys.executable,
-                args=["-m", "assistant.servers.scratch.server"],
+                args=["-m", "assistant.servers.notes.server"],
             ),
         ],
         capabilities={
-            "scratch_now": Capability.READ,
-            "scratch_list_notes": Capability.READ,
-            "scratch_read_note": Capability.READ,
-            "scratch_search_notes": Capability.READ,
+            "notes_now": Capability.READ,
+            "notes_outline": Capability.READ,
+            "notes_list_notes": Capability.READ,
+            "notes_read": Capability.READ,
+            "notes_search": Capability.READ,
             # Strictly additive — safe even after reading untrusted content.
-            "scratch_append_note": Capability.APPEND,
+            "notes_append": Capability.APPEND,
             # Replaces the whole note, so it can destroy. Gated once tainted.
-            "scratch_save_note": Capability.WRITE,
+            "notes_save": Capability.WRITE,
             # Irreversible. Gated every single time, in every mode.
-            "scratch_delete_note": Capability.EXTERNAL,
+            "notes_delete": Capability.EXTERNAL,
             # Mail is read-only by construction — there is no send tool to
             # classify, and the server opens the mailbox readonly.
             "mail_list_messages": Capability.READ,
@@ -128,8 +129,8 @@ def default_settings() -> Settings:
         # taints the session: writes stop being automatic. A note counts —
         # it can contain text pasted out of an email.
         untrusted_output={
-            "scratch_read_note",
-            "scratch_search_notes",
+            "notes_read",
+            "notes_search",
             "mail_list_messages",
             "mail_search_messages",
             "mail_read_message",
