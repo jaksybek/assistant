@@ -70,7 +70,13 @@ class Settings:
     audit_path: Path = DATA_DIR / "audit.jsonl"
     pending_path: Path = DATA_DIR / "pending.json"
     # The ONLY directory the agent may write to. Never your whole disk.
-    sandbox_dir: Path = DATA_DIR / "sandbox"
+    # Point this at a subfolder of an Obsidian vault to keep one knowledge base
+    # while still confining the agent to its own corner of it.
+    sandbox_dir: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("ASSISTANT_SANDBOX_DIR") or DATA_DIR / "sandbox"
+        ).expanduser().resolve()
+    )
 
     # interactive: a human is present, so gated actions prompt on the terminal.
     # autonomous:  nobody is watching, so gated actions queue for later review
