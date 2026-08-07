@@ -27,10 +27,14 @@ from .approvals import load_pending
 from .config import default_settings
 
 SWEEP = (
-    "Sweep my mail from the last 24 hours. First search your notes for context "
-    "on anything recurring or already settled, so you do not re-raise questions "
-    "I have answered. Then tell me what actually needs me and what is noise, and "
-    "append the triage to the note 'mail/inbox-log'. Be brief and concrete."
+    "Read the note 'todo' if it exists, and surface anything due on or before "
+    "today at the TOP of your reply under the heading 'Needs you today'. Say "
+    "nothing about items not yet due.\n\n"
+    "Then sweep my mail from the last 24 hours. Search your notes first for "
+    "context on anything recurring or already settled, so you do not re-raise "
+    "questions I have answered. Tell me what actually needs me and what is "
+    "noise, and append the triage to the note 'mail/inbox-log'. Be brief and "
+    "concrete."
 )
 
 
