@@ -12,6 +12,7 @@ dependencies = [
 [project.scripts]
 assistant = "assistant.__main__:main"
 assistant-nightly = "assistant.nightly:main"
+assistant-cron = "assistant.cron:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
