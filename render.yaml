@@ -1,0 +1,45 @@
+# Render blueprint: a nightly sweep on a stateless container.
+#
+# There is no persistent disk here by design — the agent's state lives in a
+# private git repository (see cron.py), so the container is disposable and
+# every sweep leaves a reviewable diff.
+#
+# Every secret is marked sync:false: Render will prompt for it once in the
+# dashboard rather than reading it from this file, so nothing sensitive is
+# committed to a public repo.
+
+services:
+  - type: cron
+    name: assistant-nightly
+    runtime: python
+    plan: starter
+    # 04:00 UTC. Render schedules in UTC — adjust for your timezone.
+    schedule: "0 4 * * *"
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run assistant-cron
+    envVars:
+      # Claude
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Mailbox (read-only IMAP)
+      - key: MAIL_IMAP_HOST
+        value: imap.gmail.com
+      - key: MAIL_IMAP_USER
+        sync: false
+      - key: MAIL_IMAP_PASSWORD
+        sync: false
+      - key: MAIL_IMAP_FOLDER
+        value: "[Gmail]/All Mail"
+      # Where the briefing is sent
+      - key: MAIL_DIGEST_TO
+        sync: false
+      # Private state repo: notes, audit log, pending approvals
+      - key: ASSISTANT_STATE_REPO
+        sync: false
+      - key: ASSISTANT_STATE_TOKEN
+        sync: false
+      - key: ASSISTANT_STATE_DIR
+        value: /tmp/assistant-state
+      # Nobody is watching: gated actions queue instead of blocking
+      - key: ASSISTANT_MODE
+        value: autonomous
