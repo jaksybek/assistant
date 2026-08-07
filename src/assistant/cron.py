@@ -132,6 +132,48 @@ def _preflight() -> None:
     if problems:
         raise RuntimeError("Bad configuration: " + "; ".join(problems))
 
+    _check_logins()
+
+
+def _check_logins() -> None:
+    """Actually log in to the mailbox before doing any work.
+
+    Shape checks cannot catch a credential that is the right length and simply
+    wrong — which is precisely what happened: a mistyped 16-character app
+    password passed every static check, then burned a full sweep before failing,
+    and the failure notification could not be sent either, because it needed the
+    same broken credential. Prove both logins work first; a wrong password now
+    costs seconds and says so plainly.
+    """
+    import imaplib
+    import smtplib
+
+    user = os.environ["MAIL_IMAP_USER"]
+    password = os.environ["MAIL_IMAP_PASSWORD"].strip()
+
+    try:
+        imap = imaplib.IMAP4_SSL(os.environ.get("MAIL_IMAP_HOST", "imap.gmail.com"), 993)
+        imap.login(user, password)
+        imap.logout()
+        print("[preflight] IMAP login          ok", flush=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"IMAP login failed for {user}: {exc}. The app password is wrong or revoked."
+        ) from None
+
+    try:
+        smtp = smtplib.SMTP_SSL(
+            os.environ.get("MAIL_SMTP_HOST", "smtp.gmail.com"),
+            int(os.environ.get("MAIL_SMTP_PORT", "465")),
+        )
+        smtp.login(user, password)
+        smtp.quit()
+        print("[preflight] SMTP login          ok", flush=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"SMTP login failed for {user}: {exc}. The briefing could not be delivered."
+        ) from None
+
 
 def main() -> None:
     load_dotenv()
