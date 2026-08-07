@@ -48,12 +48,22 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> str:
 
 def _remote() -> str:
     """Build the authenticated push URL. Kept out of logs and out of git config."""
-    repo = os.environ.get("ASSISTANT_STATE_REPO")
-    token = os.environ.get("ASSISTANT_STATE_TOKEN")
+    repo = (os.environ.get("ASSISTANT_STATE_REPO") or "").strip().strip("/")
+    token = (os.environ.get("ASSISTANT_STATE_TOKEN") or "").strip()
     if not (repo and token):
         raise RuntimeError(
             "Set ASSISTANT_STATE_REPO (owner/name) and ASSISTANT_STATE_TOKEN."
         )
+    # A secret pasted into a dashboard field is the likeliest thing to be wrong,
+    # and every failure mode looks identical from git's error message. Report
+    # the shape of what we were handed — never the value.
+    print(
+        f"[state] repo={repo!r}  "
+        f"token: {len(token)} chars, starts {token[:11]!r}, ends {token[-4:]!r}",
+        flush=True,
+    )
+    if token.startswith("PASTE") or "_HERE" in token:
+        raise RuntimeError("ASSISTANT_STATE_TOKEN is still the placeholder value.")
     return f"https://x-access-token:{token}@github.com/{repo}.git"
 
 
