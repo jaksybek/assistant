@@ -90,8 +90,52 @@ def _push() -> str:
     return _git("log", "-1", "--stat", "--format=%h %s", cwd=WORKDIR)
 
 
+def _preflight() -> None:
+    """Report the shape of every credential before using any of them.
+
+    Secrets are set by hand in a dashboard, and a mis-paste is the single most
+    likely failure. Worse, each one surfaces as a different opaque error deep in
+    a library — a git auth failure, an IMAP login refusal, an SMTP 535 — so
+    diagnosing them one deploy at a time is slow. Print the shape of all of
+    them up front, values never included.
+    """
+    expected = {
+        "ANTHROPIC_API_KEY": "sk-ant-",
+        "MAIL_IMAP_HOST": "",
+        "MAIL_IMAP_USER": "",
+        "MAIL_IMAP_PASSWORD": "",
+        "MAIL_DIGEST_TO": "",
+        "ASSISTANT_STATE_REPO": "",
+        "ASSISTANT_STATE_TOKEN": "github_pat_",
+    }
+    problems = []
+    for name, prefix in expected.items():
+        raw = os.environ.get(name)
+        if not raw:
+            problems.append(f"{name} is not set")
+            print(f"[preflight] {name:24} MISSING", flush=True)
+            continue
+        value = raw.strip()
+        note = ""
+        if value != raw:
+            note = "  (had surrounding whitespace)"
+        if value.endswith("...") or "_HERE" in value or value.startswith("PASTE"):
+            note += "  <-- looks truncated or still a placeholder"
+            problems.append(f"{name} looks truncated or is a placeholder")
+        elif prefix and not value.startswith(prefix):
+            note += f"  <-- expected it to start {prefix!r}"
+            problems.append(f"{name} has an unexpected prefix")
+        shown = value if name in ("MAIL_IMAP_HOST", "MAIL_IMAP_USER", "MAIL_DIGEST_TO",
+                                  "ASSISTANT_STATE_REPO") else f"{len(value)} chars"
+        print(f"[preflight] {name:24} {shown}{note}", flush=True)
+
+    if problems:
+        raise RuntimeError("Bad configuration: " + "; ".join(problems))
+
+
 def main() -> None:
     load_dotenv()
+    _preflight()
     _pull()
 
     # Point the agent at the checkout. Set before anything reads Settings,
