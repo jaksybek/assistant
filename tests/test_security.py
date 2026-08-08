@@ -59,10 +59,23 @@ def test_append_survives_taint(gate):
     assert gate.evaluate("notes_append").decision is Decision.ALLOW
 
 
-def test_write_gates_once_tainted(gate):
-    assert gate.evaluate("notes_save").decision is Decision.ALLOW
+def test_write_gates_once_tainted(gate, settings):
+    """Tests the tier, not a particular tool — which tools sit in WRITE changes
+    as the sandbox moves between a scratch directory and a real vault."""
+    settings.capabilities["demo_write"] = Capability.WRITE
+    assert gate.evaluate("demo_write").decision is Decision.ALLOW
     gate.note_output("mail_read_recent")
-    assert gate.evaluate("notes_save").decision is not Decision.ALLOW
+    assert gate.evaluate("demo_write").decision is not Decision.ALLOW
+
+
+def test_vault_mutations_always_gate(gate, settings):
+    """The sandbox now points at hundreds of notes the user wrote themselves,
+    behind iCloud with no undo. Overwriting, moving or deleting one must never
+    be automatic, however clean the context looks."""
+    for tool in ("notes_save", "notes_move", "notes_delete"):
+        for mode in ("interactive", "autonomous"):
+            settings.mode = mode
+            assert gate.evaluate(tool).decision is not Decision.ALLOW, tool
 
 
 def test_external_always_gates(gate, settings):

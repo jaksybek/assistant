@@ -95,6 +95,9 @@ def outline(folder: str = "", depth: int = 3) -> str:
             return
         entries = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name))
         for entry in entries:
+            # .obsidian and friends are app config, not the user's notes.
+            if entry.name.startswith("."):
+                continue
             if len(lines) >= MAX_OUTLINE:
                 lines.append("[outline truncated]")
                 return
@@ -121,6 +124,8 @@ def list_notes(folder: str = "") -> str:
         return f"No folder '{folder}'."
     items = []
     for entry in sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name)):
+        if entry.name.startswith("."):
+            continue
         if entry.is_dir():
             items.append(f"{entry.name}/")
         elif entry.suffix == ".md":
@@ -143,6 +148,8 @@ def search(query: str, folder: str = "", limit: int = 25) -> str:
 
     hits: list[str] = []
     for file in sorted(root.rglob("*.md")):
+        if any(part.startswith(".") for part in file.relative_to(root).parts):
+            continue
         try:
             lines = file.read_text(encoding="utf-8").splitlines()
         except OSError:
