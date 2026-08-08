@@ -45,6 +45,8 @@ MAX_RESULTS = 50
 # fit in one call, long enough to judge whether something matters.
 PREVIEW_CHARS = 600
 MAX_SWEEP = 40
+# How many recent messages a non-ASCII search scans client-side.
+MAX_LOCAL_SCAN = 200
 
 UNTRUSTED_HEADER = (
     "--- BEGIN UNTRUSTED MESSAGE CONTENT ---\n"
@@ -191,6 +193,18 @@ def search_messages(query: str, limit: int = 20) -> str:
     (sender, subject or body). Returns matching headers, not bodies."""
     limit = max(1, min(limit, MAX_RESULTS))
     with _mailbox() as conn:
+        try:
+            query.encode("ascii")
+        except UnicodeEncodeError:
+            # imaplib encodes command arguments as ASCII, so a Cyrillic query
+            # raised UnicodeEncodeError before reaching the server — silently
+            # making the Russian half of a bilingual mailbox unsearchable. The
+            # IMAP charset+literal form is not reachable through imaplib's
+            # argument handling (the server rejects every variant as a parse
+            # error), so scan the headers ourselves instead. Slower and
+            # header-only, but it works and cannot be mis-encoded.
+            return _search_headers_locally(conn, query, limit)
+
         status, data = conn.uid("SEARCH", None, "TEXT", _quote(query))
         if status != "OK":
             return "Search failed."
@@ -198,6 +212,42 @@ def search_messages(query: str, limit: int = 20) -> str:
         if not uids:
             return f"No messages matching {query!r}."
         return _summarise(conn, list(reversed(uids))[:limit])
+
+
+def _search_headers_locally(conn: imaplib.IMAP4_SSL, query: str, limit: int) -> str:
+    """Match a non-ASCII query against decoded sender and subject headers.
+
+    Only searches headers, and only the most recent MAX_LOCAL_SCAN messages —
+    say so in the result rather than letting an empty answer read as "nothing
+    there", which is exactly the mistake this whole tool is meant to prevent.
+    """
+    needle = query.strip().lower()
+    status, data = conn.uid("SEARCH", None, "ALL")
+    if status != "OK":
+        return "Search failed."
+    uids = list(reversed(data[0].split()))[:MAX_LOCAL_SCAN]
+
+    hits: list[bytes] = []
+    for uid in uids:
+        status, d = conn.uid(
+            "FETCH", uid.decode(), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"
+        )
+        if status != "OK" or not d or not isinstance(d[0], tuple):
+            continue
+        msg = email.message_from_bytes(d[0][1])
+        haystack = f"{_header(msg, 'From')} {_header(msg, 'Subject')}".lower()
+        if needle in haystack:
+            hits.append(uid)
+            if len(hits) >= limit:
+                break
+
+    scope = (
+        f"[non-ASCII query: searched sender and subject only, "
+        f"across the {min(len(uids), MAX_LOCAL_SCAN)} most recent messages]"
+    )
+    if not hits:
+        return f"No messages matching {query!r}.\n{scope}"
+    return f"{_summarise(conn, hits)}\n\n{scope}"
 
 
 @mcp.tool()
