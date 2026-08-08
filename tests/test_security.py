@@ -181,3 +181,33 @@ def test_app_password_whitespace_is_stripped(raw):
     from assistant.servers.mail.server import _clean
 
     assert _clean(raw) == "abcdefghijklmnop"
+
+
+def test_non_ascii_search_does_not_crash(monkeypatch):
+    """A Cyrillic query used to raise UnicodeEncodeError inside imaplib before
+    reaching the server, silently making the Russian half of a bilingual
+    mailbox unsearchable — and an empty result reads as "nothing there"."""
+    import contextlib
+    from email.header import Header
+
+    from assistant.servers.mail import server
+
+    # Real mail encodes non-ASCII headers per RFC 2047, which is what the
+    # decoder in _header expects; a raw UTF-8 header would not be realistic.
+    subject = Header("Календарь", "utf-8").encode()
+    raw = f"From: a@b.com\r\nSubject: {subject}\r\n\r\n".encode()
+
+    class FakeIMAP:
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                return "OK", [b"1"]
+            return "OK", [(b"1", raw)]
+
+    @contextlib.contextmanager
+    def fake_mailbox():
+        yield FakeIMAP()
+
+    monkeypatch.setattr(server, "_mailbox", fake_mailbox)
+    result = server.search_messages("календарь")  # lower case: match is case-insensitive
+    assert "non-ASCII query" in result  # took the local-scan path
+    assert "uid=1" in result            # and actually matched

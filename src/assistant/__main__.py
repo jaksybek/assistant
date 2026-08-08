@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import select
 import sys
 
 from dotenv import load_dotenv
@@ -13,6 +14,28 @@ from .approvals import load_pending, save_pending
 from .config import default_settings
 
 BANNER = """assistant — /pending  /approve <id>  /deny <id>  /mode  /quit"""
+
+
+def _read_message(prompt: str) -> str:
+    """Read one message, joining the lines of a multi-line paste.
+
+    `input()` returns a single line, so pasting several lines sent only the
+    first as the message and fed the rest back as separate turns. Every message
+    arrived truncated mid-sentence, and the agent — correctly — kept refusing to
+    guess at the missing halves.
+
+    A paste arrives in the buffer all at once, whereas a typed line leaves stdin
+    empty until the next keystroke. So after the first line, keep draining lines
+    that are already waiting and join them. Typing is unaffected.
+    """
+    first = input(prompt)
+    lines = [first]
+    while select.select([sys.stdin], [], [], 0.05)[0]:
+        extra = sys.stdin.readline()
+        if not extra:
+            break
+        lines.append(extra.rstrip("\n"))
+    return "\n".join(lines).strip()
 
 
 async def _repl() -> None:
@@ -26,7 +49,7 @@ async def _repl() -> None:
 
         while True:
             try:
-                line = input("you  ▸ ").strip()
+                line = _read_message("you  ▸ ")
             except (EOFError, KeyboardInterrupt):
                 print()
                 return
