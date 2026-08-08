@@ -128,10 +128,13 @@ def default_settings() -> Settings:
             "notes_backlinks": Capability.READ,
             # Strictly additive — safe even after reading untrusted content.
             "notes_append": Capability.APPEND,
-            # These can destroy or displace, so they gate once tainted.
-            "notes_save": Capability.WRITE,
-            "notes_move": Capability.WRITE,
-            # Irreversible. Gated every single time, in every mode.
+            # Once the sandbox points at a real Obsidian vault, these stop
+            # being cheap. Overwriting or relocating one of 656 notes the user
+            # wrote themselves is not the same as editing one the agent made,
+            # and there is no undo behind iCloud. Gate all three, always —
+            # reading and appending stay free, which is where the value is.
+            "notes_save": Capability.EXTERNAL,
+            "notes_move": Capability.EXTERNAL,
             "notes_delete": Capability.EXTERNAL,
             # Mail is read-only by construction — there is no send tool to
             # classify, and the server opens the mailbox readonly.
