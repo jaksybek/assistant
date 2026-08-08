@@ -149,7 +149,8 @@ def _check_logins() -> None:
     import smtplib
 
     user = os.environ["MAIL_IMAP_USER"]
-    password = os.environ["MAIL_IMAP_PASSWORD"].strip()
+    # .strip() misses spaces BETWEEN the groups of a Gmail app password.
+    password = "".join(c for c in os.environ["MAIL_IMAP_PASSWORD"] if not c.isspace())
 
     try:
         imap = imaplib.IMAP4_SSL(os.environ.get("MAIL_IMAP_HOST", "imap.gmail.com"), 993)

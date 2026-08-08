@@ -41,7 +41,8 @@ SWEEP = (
 def _send(subject: str, body: str) -> None:
     """Email the briefing. Never exposed as a tool."""
     user = os.environ["MAIL_IMAP_USER"]
-    password = os.environ["MAIL_IMAP_PASSWORD"]
+    # Same non-breaking-space hazard as IMAP; see servers/mail/server.py.
+    password = "".join(c for c in os.environ["MAIL_IMAP_PASSWORD"] if not c.isspace())
     recipient = os.environ.get("MAIL_DIGEST_TO")
     if not recipient:
         raise RuntimeError("Set MAIL_DIGEST_TO in .env to receive the briefing.")

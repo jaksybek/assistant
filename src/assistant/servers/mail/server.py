@@ -54,12 +54,24 @@ UNTRUSTED_HEADER = (
 UNTRUSTED_FOOTER = "\n--- END UNTRUSTED MESSAGE CONTENT ---"
 
 
+def _clean(secret: str | None) -> str:
+    """Strip every space from an app password, including the invisible ones.
+
+    Google displays app passwords as four groups of four, and copying from that
+    page yields NON-BREAKING spaces (U+00A0) rather than ordinary ones. They
+    survive a naive .replace(" ", ""), survive .strip() when they sit between
+    the groups, and then fail deep inside imaplib as an ascii codec error that
+    says nothing about the real cause.
+    """
+    return "".join(ch for ch in (secret or "") if not ch.isspace())
+
+
 @contextmanager
 def _mailbox() -> Iterator[imaplib.IMAP4_SSL]:
     """Connect, select the mailbox READ-ONLY, and always log out."""
     host = os.environ.get("MAIL_IMAP_HOST")
     user = os.environ.get("MAIL_IMAP_USER")
-    password = os.environ.get("MAIL_IMAP_PASSWORD")
+    password = _clean(os.environ.get("MAIL_IMAP_PASSWORD"))
     if not (host and user and password):
         raise RuntimeError(
             "Mail is not configured. Set MAIL_IMAP_HOST, MAIL_IMAP_USER and "

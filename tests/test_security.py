@@ -169,3 +169,15 @@ def test_refusals_are_audited(gate, settings):
     log = settings.audit_path.read_text()
     assert "queued_for_approval" in log
     assert "tool_decision" in log
+
+
+@pytest.mark.parametrize(
+    "raw", ["abcd efgh ijkl mnop", "abcd\xa0efgh\xa0ijkl\xa0mnop", "  abcdefghijklmnop  "]
+)
+def test_app_password_whitespace_is_stripped(raw):
+    """Gmail renders app passwords in groups of four, and copying from that page
+    yields NON-BREAKING spaces. They survive .replace(' ', '') and, when they sit
+    between groups, .strip() too — then fail as an opaque ascii codec error."""
+    from assistant.servers.mail.server import _clean
+
+    assert _clean(raw) == "abcdefghijklmnop"
