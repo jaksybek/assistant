@@ -150,6 +150,14 @@ def search(query: str, folder: str = "", limit: int = 25) -> str:
     for file in sorted(root.rglob("*.md")):
         if any(part.startswith(".") for part in file.relative_to(root).parts):
             continue
+        # Match the note's own path too. People title notes with the thing they
+        # are about, so a note called "procrastination and productivity" should
+        # answer a search for procrastination — even when the body never
+        # repeats the word, which is common and was silently missing matches.
+        if needle in _rel(file).lower():
+            hits.append(f"{_rel(file)}: [title match]")
+            if len(hits) >= limit:
+                return "\n".join(hits) + f"\n[stopped at {limit} matches]"
         try:
             lines = file.read_text(encoding="utf-8").splitlines()
         except OSError:
