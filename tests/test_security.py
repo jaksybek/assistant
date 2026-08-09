@@ -224,3 +224,12 @@ def test_non_ascii_search_does_not_crash(monkeypatch):
     result = server.search_messages("календарь")  # lower case: match is case-insensitive
     assert "non-ASCII query" in result  # took the local-scan path
     assert "uid=1" in result            # and actually matched
+
+
+def test_search_matches_note_titles(notes):
+    """People title notes with the thing they're about. A note called
+    'procrastination and productivity' must answer a search for
+    'procrastination' even if the body never repeats the word."""
+    notes.save("Ideas/procrastination and productivity", "Всё про откладывание дел.")
+    result = notes.search("procrastination")
+    assert "Ideas/procrastination and productivity" in result
