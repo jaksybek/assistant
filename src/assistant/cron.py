@@ -181,9 +181,12 @@ def main() -> None:
     _preflight()
     _pull()
 
-    # Point the agent at the checkout. Set before anything reads Settings,
-    # which resolve these at construction.
-    os.environ["ASSISTANT_DATA_DIR"] = str(WORKDIR)
+    # Point the agent at the checkout, unless the environment already says
+    # where to look. setdefault rather than assignment: when the state repo is
+    # the user's own Obsidian vault, the sandbox is the repo ROOT (so the agent
+    # sees every note) and the audit log belongs in a subfolder rather than
+    # scattered at the top of a knowledge base someone else reads.
+    os.environ.setdefault("ASSISTANT_DATA_DIR", str(WORKDIR))
     os.environ.setdefault("ASSISTANT_SANDBOX_DIR", str(WORKDIR / "sandbox"))
 
     from .nightly import main as sweep
