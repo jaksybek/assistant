@@ -85,6 +85,12 @@ class Settings:
     data_dir: Path = field(default_factory=_data_dir)
     audit_path: Path = field(default_factory=lambda: _data_dir() / "audit.jsonl")
     pending_path: Path = field(default_factory=lambda: _data_dir() / "pending.json")
+    # Telegram's getUpdates replays the last 24 hours until you confirm receipt.
+    # This lives with the other state so a stateless container does not re-run
+    # every approval it already ran.
+    telegram_offset_path: Path = field(
+        default_factory=lambda: _data_dir() / "telegram-offset.json"
+    )
     # The ONLY directory the agent may write to. Never your whole disk.
     # Point this at a subfolder of an Obsidian vault to keep one knowledge base
     # while still confining the agent to its own corner of it.

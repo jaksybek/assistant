@@ -43,3 +43,44 @@ services:
       # Nobody is watching: gated actions queue instead of blocking
       - key: ASSISTANT_MODE
         value: autonomous
+      # Approvals channel. Optional — leave the token unset and queued actions
+      # simply wait in the file instead of arriving on a phone.
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+  # The other half of the approval loop. The sweep above exits as soon as it is
+  # done, so nothing is listening when a button is finally pressed. This wakes
+  # up, asks Telegram what was decided since last time, runs it, and exits. The
+  # interval is how long an approval waits; each run is a few seconds.
+  - type: cron
+    name: assistant-approvals
+    runtime: python
+    plan: starter
+    schedule: "*/15 * * * *"
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run assistant-approve
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # An approved action runs through the same MCP servers as the sweep, so
+      # the mail server needs its credentials to start alongside the notes one.
+      - key: MAIL_IMAP_HOST
+        value: imap.gmail.com
+      - key: MAIL_IMAP_USER
+        sync: false
+      - key: MAIL_IMAP_PASSWORD
+        sync: false
+      - key: MAIL_IMAP_FOLDER
+        value: "[Gmail]/All Mail"
+      - key: ASSISTANT_STATE_REPO
+        sync: false
+      - key: ASSISTANT_STATE_TOKEN
+        sync: false
+      - key: ASSISTANT_STATE_DIR
+        value: /tmp/assistant-state
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
