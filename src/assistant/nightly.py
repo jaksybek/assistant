@@ -73,9 +73,16 @@ async def _run() -> str:
         lines = "\n".join(
             f"  {e['id']}  {e['tool']}  {e['reason']}" for e in pending.values()
         )
+        from . import notify
+
+        where = (
+            "Approve or deny them in Telegram"
+            if notify.is_configured()
+            else "Run `assistant` and use /pending to review"
+        )
         briefing += (
             f"\n\n---\n{len(pending)} action(s) waiting on your approval. "
-            f"Run `assistant` and use /pending to review:\n{lines}"
+            f"{where}:\n{lines}"
         )
     return briefing
 

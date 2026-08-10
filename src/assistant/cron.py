@@ -67,7 +67,7 @@ def _remote() -> str:
     return f"https://x-access-token:{token}@github.com/{repo}.git"
 
 
-def _pull() -> None:
+def pull_state() -> None:
     remote = _remote()
     if (WORKDIR / ".git").exists():
         _git("remote", "set-url", "origin", remote, cwd=WORKDIR)
@@ -80,7 +80,7 @@ def _pull() -> None:
     _git("config", "user.email", "assistant@localhost", cwd=WORKDIR)
 
 
-def _push() -> str:
+def push_state() -> str:
     if not _git("status", "--porcelain", cwd=WORKDIR):
         return "no changes to commit"
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -179,7 +179,7 @@ def _check_logins() -> None:
 def main() -> None:
     load_dotenv()
     _preflight()
-    _pull()
+    pull_state()
 
     # Point the agent at the checkout, unless the environment already says
     # where to look. setdefault rather than assignment: when the state repo is
@@ -197,7 +197,7 @@ def main() -> None:
         # Push whatever the sweep managed to record, even if it then failed.
         # Losing a night's notes to an unrelated error would be worse than a
         # partial commit.
-        print(_push())
+        print(push_state())
 
 
 if __name__ == "__main__":

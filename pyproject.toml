@@ -7,12 +7,17 @@ dependencies = [
     "anthropic>=0.116.0",
     "mcp>=1.0.0",
     "python-dotenv>=1.0.0",
+    # Already present transitively via anthropic; declared because notify.py
+    # imports it directly.
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]
 assistant = "assistant.__main__:main"
 assistant-nightly = "assistant.nightly:main"
 assistant-cron = "assistant.cron:main"
+assistant-approve = "assistant.approve:main"
+assistant-telegram-setup = "assistant.telegram_setup:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
