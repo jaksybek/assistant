@@ -88,6 +88,14 @@ Be direct. Say what you did, what you could not do, and what needs the user."""
 # Matched by prefix rather than exact name so a new MAIL_* or TELEGRAM_* setting
 # is covered the day it is added, instead of the day someone remembers to list
 # it here.
+#
+# This list is a denylist, and that is its weakness: a credential whose name
+# does not match any prefix here is handed to every server by default. Adding
+# the calendar meant adding GOOGLE_ below, and forgetting would have given the
+# notes server a token to the user's calendar. The safer shape is the inverse —
+# strip everything except a small runtime allowlist (PATH, HOME, LANG,
+# ASSISTANT_SANDBOX_DIR) plus each server's declared prefixes — and it is worth
+# doing before the next credential arrives rather than after.
 SECRET_PREFIXES = (
     "ANTHROPIC_",
     "MAIL_",
@@ -96,6 +104,7 @@ SECRET_PREFIXES = (
     "GITHUB_",
     "GH_",
     "OPENAI_",
+    "GOOGLE_",
 )
 
 

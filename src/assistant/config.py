@@ -153,6 +153,13 @@ def default_settings() -> Settings:
             "mail_search_messages": Capability.READ,
             "mail_read_message": Capability.READ,
             "mail_read_recent": Capability.READ,
+            # Calendar is read-only by construction, like mail: there is no
+            # create/move/cancel tool to classify, and the OAuth token is
+            # scoped readonly so one could not work if it existed. When writes
+            # arrive they are EXTERNAL — see servers/calendar/server.py.
+            "calendar_list_events": Capability.READ,
+            "calendar_search_events": Capability.READ,
+            "calendar_read_event": Capability.READ,
         },
         # Output written by someone other than the user. Reading any of these
         # taints the session: writes stop being automatic. A note counts —
@@ -164,6 +171,15 @@ def default_settings() -> Settings:
             "mail_search_messages",
             "mail_read_message",
             "mail_read_recent",
+            # Anyone who knows the address can send an invitation, and Google
+            # files invitations in the calendar before the user has agreed to
+            # anything. So an event title or description is a stranger's text
+            # wearing the user's own data as a disguise — more deceptive than
+            # mail, not less, because a calendar entry reads as a decision the
+            # user already made.
+            "calendar_list_events",
+            "calendar_search_events",
+            "calendar_read_event",
         },
     )
 
@@ -177,6 +193,20 @@ def default_settings() -> Settings:
                 args=["-m", "assistant.servers.mail.server"],
                 # The only server that needs a credential, and only its own.
                 env_prefixes=("MAIL_",),
+            )
+        )
+
+    # Same rule as mail: an unconfigured integration is an absent one, not a
+    # broken one. Keyed on the refresh token because that is the credential
+    # that actually grants access — a client id and secret alone authorise
+    # nothing, so a half-finished setup should leave the server switched off.
+    if os.environ.get("GOOGLE_CALENDAR_REFRESH_TOKEN"):
+        settings.servers.append(
+            MCPServer(
+                name="calendar",
+                command=sys.executable,
+                args=["-m", "assistant.servers.calendar.server"],
+                env_prefixes=("GOOGLE_CALENDAR_",),
             )
         )
 
