@@ -93,14 +93,29 @@ async def _apply(decisions: list[dict]) -> list[str]:
 
 def _settle(decision: dict, text: str, toast: str) -> None:
     """Close the loop in the chat. Never fatal: the action has already happened
-    (or not), and failing to redraw a message must not change that."""
-    try:
-        if decision.get("callback_id"):
+    (or not), and failing to redraw a message must not change that.
+
+    The two calls are guarded separately, and that separation is the point.
+    `answerCallbackQuery` is a toast on a live button press, and Telegram expires
+    the query within seconds — while this job wakes on a fifteen-minute cron, so
+    by design it almost always arrives too late. `editMessageText` never expires
+    and is the half that matters: it strips the buttons and records the outcome.
+    Sharing one try block let the doomed call skip the useful one, leaving every
+    executed action displaying live Approve/Deny buttons and reading as pending.
+    """
+    if decision.get("callback_id"):
+        try:
             notify.acknowledge(decision["callback_id"], toast)
-        if decision.get("chat_id") and decision.get("message_id"):
+        except Exception:
+            # Expected whenever the press is older than the query's lifetime,
+            # which on a cron is nearly always. Not worth reporting.
+            pass
+
+    if decision.get("chat_id") and decision.get("message_id"):
+        try:
             notify.settle(decision["chat_id"], decision["message_id"], text)
-    except Exception as exc:
-        print(f"[approve] could not update the message: {exc}", flush=True)
+        except Exception as exc:
+            print(f"[approve] could not update the message: {exc}", flush=True)
 
 
 def main() -> None:
