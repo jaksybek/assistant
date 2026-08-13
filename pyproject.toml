@@ -18,6 +18,7 @@ assistant-nightly = "assistant.nightly:main"
 assistant-cron = "assistant.cron:main"
 assistant-approve = "assistant.approve:main"
 assistant-telegram-setup = "assistant.telegram_setup:main"
+assistant-calendar-setup = "assistant.calendar_setup:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]
