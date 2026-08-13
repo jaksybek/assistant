@@ -279,6 +279,33 @@ def test_an_ignored_update_still_advances_the_offset(telegram, tmp_path):
     assert telegram._offset(offset) == 8
 
 
+def test_a_stale_callback_still_settles_the_message(telegram):
+    """The toast expires; the message edit must not go with it.
+
+    `answerCallbackQuery` is only valid for seconds after the press, and this job
+    runs on a fifteen-minute cron — so in production it fails nearly every time.
+    The edit that strips the buttons has to happen anyway, or an executed action
+    keeps showing live Approve/Deny and reads as still pending.
+    """
+    from assistant import approve
+
+    calls: list[str] = []
+
+    def _call(method, **kw):
+        calls.append(method)
+        if method == "answerCallbackQuery":
+            raise RuntimeError("Bad Request: query is too old")
+        return []
+
+    telegram._call = _call
+    approve._settle(
+        {"id": "abc123", "callback_id": "cb1", "chat_id": 555, "message_id": 9},
+        "✅ Done",
+        "done",
+    )
+    assert calls == ["answerCallbackQuery", "editMessageText"]
+
+
 def test_queued_input_cannot_forge_the_message(telegram):
     """A queued action's input is untrusted — it can hold text the agent read out
     of an email. Rendered unescaped, a note body could impersonate the bot's own
