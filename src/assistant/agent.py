@@ -75,8 +75,46 @@ Deleting always needs their approval, by design; never work around that.
 Be direct. Say what you did, what you could not do, and what needs the user."""
 
 
+# Environment variables that carry a credential. A subprocess inherits the
+# whole environment unless you stop it, so every server was being handed every
+# secret the agent owns — the notes server, which only ever touches markdown
+# files, received the Anthropic key, the mail password and the state-repo token.
+#
+# Nothing exploited that. It is simply a larger blast radius than the design
+# claims: "least privilege per server, own credentials" is not true if they all
+# inherit the same environment. One buggy or malicious dependency inside any
+# server is enough, and the servers are exactly where third-party code runs.
+#
+# Matched by prefix rather than exact name so a new MAIL_* or TELEGRAM_* setting
+# is covered the day it is added, instead of the day someone remembers to list
+# it here.
+SECRET_PREFIXES = (
+    "ANTHROPIC_",
+    "MAIL_",
+    "TELEGRAM_",
+    "ASSISTANT_STATE_",
+    "GITHUB_",
+    "GH_",
+    "OPENAI_",
+)
+
+
 def _namespaced(server: str, tool: str) -> str:
     return f"{server}_{tool}"
+
+
+def _server_env(server: Any, base: dict[str, str]) -> dict[str, str]:
+    """The environment one server is launched with: everything ambient, every
+    secret removed, then only the prefixes that server declared."""
+    scoped = {
+        key: value
+        for key, value in base.items()
+        if not key.startswith(SECRET_PREFIXES)
+    }
+    for key, value in base.items():
+        if server.env_prefixes and key.startswith(tuple(server.env_prefixes)):
+            scoped[key] = value
+    return scoped
 
 
 class Assistant:
@@ -95,11 +133,12 @@ class Assistant:
 
     async def __aenter__(self) -> "Assistant":
         # Each server is a subprocess with a scoped environment — it is told the
-        # sandbox path and nothing else it doesn't need.
-        env = dict(os.environ)
-        env["ASSISTANT_SANDBOX_DIR"] = str(self.settings.sandbox_dir)
+        # sandbox path, its own integration's settings, and nothing else.
+        base = dict(os.environ)
+        base["ASSISTANT_SANDBOX_DIR"] = str(self.settings.sandbox_dir)
 
         for server in self.settings.servers:
+            env = _server_env(server, base)
             params = StdioServerParameters(command=server.command, args=server.args, env=env)
             client = await self._stack.enter_async_context(Client(stdio_client(params)))
 

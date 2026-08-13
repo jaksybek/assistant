@@ -173,6 +173,58 @@ def test_imap_search_quoting_neutralises_injection(payload):
     assert '\\"' in quoted or '"' not in quoted[1:-1]
 
 
+# --- credential scoping -----------------------------------------------------
+
+
+def test_servers_do_not_inherit_unrelated_secrets():
+    """"Least privilege per server, own credentials" has to be enforced, not
+    just intended. A subprocess inherits the whole environment by default, so
+    the notes server was receiving the Anthropic key and the mail password."""
+    from assistant.agent import _server_env
+    from assistant.config import MCPServer
+
+    base = {
+        "PATH": "/usr/bin",
+        "ASSISTANT_SANDBOX_DIR": "/tmp/sandbox",
+        "ANTHROPIC_API_KEY": "sk-ant-secret",
+        "MAIL_IMAP_PASSWORD": "app-password",
+        "TELEGRAM_BOT_TOKEN": "bot-token",
+        "ASSISTANT_STATE_TOKEN": "github_pat_secret",
+    }
+
+    notes_env = _server_env(MCPServer(name="notes", command="python"), base)
+    # It keeps what it needs to run and to find its sandbox...
+    assert notes_env["PATH"] == "/usr/bin"
+    assert notes_env["ASSISTANT_SANDBOX_DIR"] == "/tmp/sandbox"
+    # ...and none of the credentials.
+    assert "ANTHROPIC_API_KEY" not in notes_env
+    assert "MAIL_IMAP_PASSWORD" not in notes_env
+    assert "TELEGRAM_BOT_TOKEN" not in notes_env
+    assert "ASSISTANT_STATE_TOKEN" not in notes_env
+
+
+def test_a_server_still_gets_its_own_credentials():
+    """Scoping must not break the integration that legitimately needs a secret."""
+    from assistant.agent import _server_env
+    from assistant.config import MCPServer
+
+    base = {"MAIL_IMAP_PASSWORD": "app-password", "ANTHROPIC_API_KEY": "sk-ant-secret"}
+    mail_env = _server_env(
+        MCPServer(name="mail", command="python", env_prefixes=("MAIL_",)), base
+    )
+    assert mail_env["MAIL_IMAP_PASSWORD"] == "app-password"
+    assert "ANTHROPIC_API_KEY" not in mail_env
+
+
+def test_configured_mail_server_declares_its_prefix(monkeypatch):
+    """The registry and the scoping must agree — a mail server that declared
+    nothing would start up with no password and fail obscurely at login."""
+    monkeypatch.setenv("MAIL_IMAP_HOST", "imap.example.com")
+    monkeypatch.setenv("ASSISTANT_DATA_DIR", "/tmp/assistant-test-data")
+    mail = next(s for s in default_settings().servers if s.name == "mail")
+    assert "MAIL_" in mail.env_prefixes
+
+
 # --- audit ------------------------------------------------------------------
 
 

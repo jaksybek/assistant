@@ -68,6 +68,11 @@ class MCPServer:
     name: str
     command: str
     args: list[str] = field(default_factory=list)
+    # Environment prefixes this server's own integration needs. Every secret is
+    # stripped from the environment a server inherits (see agent.py); these are
+    # the ones handed back. A server that declares nothing gets no credentials
+    # at all, which is the right answer for most of them.
+    env_prefixes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -164,6 +169,8 @@ def default_settings() -> Settings:
                 name="mail",
                 command=sys.executable,
                 args=["-m", "assistant.servers.mail.server"],
+                # The only server that needs a credential, and only its own.
+                env_prefixes=("MAIL_",),
             )
         )
 
