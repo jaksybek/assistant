@@ -203,6 +203,66 @@ def test_servers_do_not_inherit_unrelated_secrets():
     assert "ASSISTANT_STATE_TOKEN" not in notes_env
 
 
+def test_an_unnamed_credential_is_contained_by_default():
+    """The whole point of the allowlist, and the thing a denylist could not do.
+
+    Nothing in this codebase has ever heard of DEEPSEEK_API_KEY or
+    DIGITALOCEAN_TOKEN. Under a denylist they would have been handed to every
+    server on the day they were introduced, and stayed there until somebody
+    noticed. Unrecognised must mean withheld, not shared.
+    """
+    from assistant.agent import _server_env
+    from assistant.config import MCPServer
+
+    base = {
+        "PATH": "/usr/bin",
+        "DEEPSEEK_API_KEY": "sk-deepseek",
+        "DIGITALOCEAN_TOKEN": "dop_v1_secret",
+        "SOME_FUTURE_VENDOR_KEY": "whatever",
+    }
+    env = _server_env(MCPServer(name="notes", command="python"), base)
+
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_the_allowlist_is_enough_for_a_server_to_start(tmp_path):
+    """The failure mode an allowlist introduces is the opposite of a leak: too
+    tight, and a server cannot start — which no amount of dict comparison will
+    show. So actually launch one and ask it for its tools.
+
+    If this fails after someone narrows RUNTIME_ENV, the fix is to add the
+    variable back with a comment saying what needs it. A missing variable is a
+    stack trace; a leaked one is silent. That asymmetry is the whole argument.
+    """
+    import asyncio
+    import os
+    import sys
+
+    from mcp import StdioServerParameters
+    from mcp.client import Client
+    from mcp.client.stdio import stdio_client
+
+    from assistant.agent import _server_env
+    from assistant.config import MCPServer
+
+    server = MCPServer(
+        name="notes",
+        command=sys.executable,
+        args=["-m", "assistant.servers.notes.server"],
+    )
+    base = dict(os.environ)
+    base["ASSISTANT_SANDBOX_DIR"] = str(tmp_path / "sandbox")
+    env = _server_env(server, base)
+
+    async def _list_tools() -> list[str]:
+        params = StdioServerParameters(command=server.command, args=server.args, env=env)
+        async with Client(stdio_client(params)) as client:
+            return [t.name for t in (await client.list_tools()).tools]
+
+    tools = asyncio.run(_list_tools())
+    assert "read" in tools and "append" in tools
+
+
 def test_a_server_still_gets_its_own_credentials():
     """Scoping must not break the integration that legitimately needs a secret."""
     from assistant.agent import _server_env
@@ -284,9 +344,10 @@ def test_calendar_server_only_starts_when_it_can_authenticate(monkeypatch, tmp_p
 
 
 def test_calendar_credentials_reach_only_the_calendar_server():
-    """The failure this guards against is concrete: adding the calendar meant
-    adding GOOGLE_ to SECRET_PREFIXES, and forgetting would have handed the
-    notes server a token to the user's calendar."""
+    """The failure this guards against is concrete: under the old denylist,
+    adding the calendar meant remembering to name GOOGLE_ as a secret, and
+    forgetting would have handed the notes server a token to the user's
+    calendar. It now falls out of the allowlist instead of being remembered."""
     from assistant.agent import _server_env
     from assistant.config import MCPServer
 
