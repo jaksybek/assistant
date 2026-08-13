@@ -1,7 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
+# Every .env variant, not just the canonical name. An editor's stray write
+# (.env.save, .env.bak, .env~) is a full copy of every secret, and this repo is
+# public — one `git add -A` would publish it.
 .env
+.env.*
+!.env.example
 *.egg-info/
 dist/
 build/

@@ -225,6 +225,149 @@ def test_configured_mail_server_declares_its_prefix(monkeypatch):
     assert "MAIL_" in mail.env_prefixes
 
 
+# --- the telegram approval channel ------------------------------------------
+
+
+@pytest.fixture
+def telegram(monkeypatch):
+    """The transport with the network replaced. Records every call instead."""
+    from assistant import notify
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "555")
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(notify, "_call", lambda method, **kw: sent.append((method, kw)) or [])
+    notify.sent = sent
+    return notify
+
+
+def test_only_the_allowlisted_chat_can_approve(telegram):
+    """The whole gate rests on this. A bot username is public, an eight-character
+    id is not a secret, and a callback is just a message — so the sender is the
+    only thing that makes a decision an authorisation rather than a stranger's
+    button press."""
+    mine = {"callback_query": {"from": {"id": 555}, "data": "ok:abc123"}}
+    theirs = {"callback_query": {"from": {"id": 999}, "data": "ok:abc123"}}
+    assert telegram.is_authorised(mine) is True
+    assert telegram.is_authorised(theirs) is False
+
+
+def test_a_stranger_decision_is_dropped(telegram, tmp_path):
+    """End to end through the poller, not just the predicate — an unauthorised
+    press must produce no decision to act on."""
+    telegram._call = lambda method, **kw: [
+        {
+            "update_id": 7,
+            "callback_query": {
+                "id": "cb1",
+                "from": {"id": 999},  # not the allowlisted chat
+                "data": "ok:abc123",
+                "message": {"chat": {"id": 999}, "message_id": 1},
+            },
+        }
+    ]
+    assert telegram.poll_decisions(tmp_path / "offset.json") == []
+
+
+def test_an_ignored_update_still_advances_the_offset(telegram, tmp_path):
+    """Otherwise a stranger's press is replayed on every future run, forever."""
+    offset = tmp_path / "offset.json"
+    telegram._call = lambda method, **kw: [
+        {"update_id": 7, "callback_query": {"from": {"id": 999}, "data": "ok:x"}}
+    ]
+    telegram.poll_decisions(offset)
+    assert telegram._offset(offset) == 8
+
+
+def test_a_stale_callback_still_settles_the_message(telegram):
+    """The toast expires; the message edit must not go with it.
+
+    `answerCallbackQuery` is only valid for seconds after the press, and this job
+    runs on a fifteen-minute cron — so in production it fails nearly every time.
+    The edit that strips the buttons has to happen anyway, or an executed action
+    keeps showing live Approve/Deny and reads as still pending.
+    """
+    from assistant import approve
+
+    calls: list[str] = []
+
+    def _call(method, **kw):
+        calls.append(method)
+        if method == "answerCallbackQuery":
+            raise RuntimeError("Bad Request: query is too old")
+        return []
+
+    telegram._call = _call
+    approve._settle(
+        {"id": "abc123", "callback_id": "cb1", "chat_id": 555, "message_id": 9},
+        "✅ Done",
+        "done",
+    )
+    assert calls == ["answerCallbackQuery", "editMessageText"]
+
+
+def test_queued_input_cannot_forge_the_message(telegram):
+    """A queued action's input is untrusted — it can hold text the agent read out
+    of an email. Rendered unescaped, a note body could impersonate the bot's own
+    framing and make a dangerous action look already-approved."""
+    telegram.request_approval(
+        {
+            "id": "abc123",
+            "tool": "notes_delete",
+            "reason": "irreversible",
+            "input": {"path": "<b>✅ Approved automatically</b>"},
+        }
+    )
+    method, payload = telegram.sent[-1]
+    assert method == "sendMessage"
+    body = payload["text"]
+    assert "&lt;b&gt;" in body           # the injected markup arrived as text
+    assert "<b>✅ Approved automatically</b>" not in body
+
+
+def test_notifying_never_breaks_the_queue(gate, settings, monkeypatch):
+    """Queuing has already succeeded by the time we notify. A Telegram outage
+    must not fail the sweep, and above all must not cause the gated action to be
+    retried."""
+    from assistant import notify
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "12345:test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "555")
+
+    def explode(entry):
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr(notify, "request_approval", explode)
+    settings.mode = "autonomous"
+
+    permitted, message = gate.authorize("notes_delete", {"path": "x"})
+
+    assert permitted is False
+    assert "NOT been performed" in message
+    assert len(load_pending(settings)) == 1
+    assert "approval_notify_failed" in settings.audit_path.read_text()
+
+
+def test_telegram_is_not_reachable_as_a_tool(settings):
+    """Same rule as mail's send: the component that can be prompt-injected has no
+    ability to message anyone. Enforced by absence — there is no tool to call."""
+    assert not [t for t in settings.capabilities if "telegram" in t or "notify" in t]
+
+
+def test_server_environments_carry_no_bot_token(monkeypatch):
+    """The token is what lets anything speak as the assistant. No MCP server has
+    any use for it."""
+    from assistant.agent import _server_env
+    from assistant.config import MCPServer
+
+    base = {"TELEGRAM_BOT_TOKEN": "12345:test-token", "TELEGRAM_CHAT_ID": "555"}
+    for server in (
+        MCPServer(name="notes", command="python"),
+        MCPServer(name="mail", command="python", env_prefixes=("MAIL_",)),
+    ):
+        assert "TELEGRAM_BOT_TOKEN" not in _server_env(server, base)
+
+
 # --- audit ------------------------------------------------------------------
 
 

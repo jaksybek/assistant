@@ -154,12 +154,31 @@ class ApprovalGate:
         }
         self._save_pending(pending)
         self.audit.record("queued_for_approval", id=entry_id, tool=tool, input=tool_input)
+        self._notify(pending[entry_id])
         # This wording matters: it keeps the agent productive instead of stuck.
         return False, (
             f"Queued for human approval as '{entry_id}' — the action has NOT been performed. "
             "Do not retry it and do not attempt a workaround. Continue with every other part "
             "of the task, and tell the user at the end what is waiting on their approval."
         )
+
+    def _notify(self, entry: dict[str, Any]) -> None:
+        """Push the queued action to Telegram, if it is configured.
+
+        Best-effort on purpose. Queuing has already succeeded and been audited
+        by this point; the action is safely parked either way. A Telegram outage
+        must not take down a sweep or, worse, cause a gated action to be retried
+        — so every failure is recorded and swallowed.
+        """
+        from . import notify
+
+        if not notify.is_configured():
+            return
+        try:
+            notify.request_approval(entry)
+            self.audit.record("approval_notified", id=entry["id"], channel="telegram")
+        except Exception as exc:
+            self.audit.record("approval_notify_failed", id=entry["id"], error=str(exc))
 
     # -- the pending queue ---------------------------------------------------
 
