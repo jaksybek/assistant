@@ -632,6 +632,96 @@ def test_recordings_are_linked_without_needing_a_gated_write(settings):
     assert settings.capabilities["notes_save"] is Capability.EXTERNAL
 
 
+# --- the drive preflight ----------------------------------------------------
+
+
+@pytest.fixture
+def drive_reachable(monkeypatch):
+    """Stand in for a working service account, so only the folder check varies."""
+    import httpx
+
+    from assistant.servers.drive import server
+
+    monkeypatch.setenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "folder-1")
+    monkeypatch.setattr(server, "_access_token", lambda: "token")
+    monkeypatch.setattr(
+        server, "_service_account", lambda: {"client_email": "reader@project.iam.gserviceaccount.com"}
+    )
+    return httpx
+
+
+def _drive_response(status: int, payload: dict | None = None):
+    class _Response:
+        status_code = status
+        text = "body"
+
+        @staticmethod
+        def json() -> dict:
+            return payload or {}
+
+    return lambda *a, **kw: _Response()
+
+
+def test_drive_preflight_skips_when_not_configured(monkeypatch):
+    """An unconfigured integration is absent, not broken — the same rule the
+    server registry follows. Failing here would break every setup without
+    recordings."""
+    from assistant import cron
+
+    monkeypatch.delenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", raising=False)
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+
+    cron._check_drive()
+
+
+def test_half_configured_drive_is_reported(monkeypatch):
+    """config.py starts the server only when both halves are set, so setting one
+    leaves the agent silently without recordings and never saying why."""
+    from assistant import cron
+
+    monkeypatch.setenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+
+    with pytest.raises(RuntimeError, match="half-configured"):
+        cron._check_drive()
+
+
+def test_an_unshared_folder_stops_the_run(monkeypatch, drive_reachable):
+    """The failure this whole check exists for. A listing could not catch it —
+    'no recordings yet' and 'shared with the wrong address' both come back
+    empty. Fetching the folder answers 404, and the message has to name the
+    address to share with, or it sends you hunting."""
+    from assistant import cron
+
+    monkeypatch.setattr(drive_reachable, "get", _drive_response(404))
+
+    with pytest.raises(RuntimeError, match="reader@project.iam.gserviceaccount.com"):
+        cron._check_drive()
+
+
+def test_a_transient_drive_failure_does_not_cost_the_briefing(monkeypatch, drive_reachable):
+    """Drive is optional and mail is not. A Google outage must not turn into a
+    morning with no briefing at all — only configuration errors are fatal."""
+    from assistant import cron
+
+    monkeypatch.setattr(drive_reachable, "get", _drive_response(503))
+    cron._check_drive()
+
+    def _boom(*a, **kw):
+        raise drive_reachable.ConnectError("network down")
+
+    monkeypatch.setattr(drive_reachable, "get", _boom)
+    cron._check_drive()
+
+
+def test_a_reachable_folder_passes(monkeypatch, drive_reachable):
+    from assistant import cron
+
+    monkeypatch.setattr(drive_reachable, "get", _drive_response(200, {"name": "Plaud"}))
+    cron._check_drive()
+
+
 # --- the telegram approval channel ------------------------------------------
 
 
