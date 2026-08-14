@@ -878,6 +878,108 @@ def test_a_reachable_folder_passes(monkeypatch, drive_reachable):
     cron._check_drive()
 
 
+# --- meeting reminders ------------------------------------------------------
+
+
+def _event(minutes_away: float, **extra):
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime.now(timezone.utc) + timedelta(minutes=minutes_away)
+    event = {
+        "id": extra.pop("id", f"evt{minutes_away}"),
+        "summary": extra.pop("summary", "Standup"),
+        "start": {"dateTime": start.isoformat()},
+    }
+    event.update(extra)
+    return event
+
+
+def test_only_meetings_inside_the_window_are_nudged():
+    from assistant.reminders import due
+
+    soon, later = _event(5, id="soon"), _event(180, id="later")
+    assert [e["id"] for e in due([soon, later], {}, lead=20)] == ["soon"]
+
+
+def test_a_meeting_that_already_started_is_not_nudged():
+    """The second-worst thing a reminder can do, after not arriving: if the job
+    stops for a day it must wake up quiet, not fire thirty nudges for meetings
+    that are already over."""
+    from assistant.reminders import due
+
+    assert due([_event(-30)], {}, lead=20) == []
+
+
+def test_nobody_is_nudged_twice():
+    """This job wakes every two minutes. Without the record it would send the
+    same reminder ten times before the meeting starts."""
+    from assistant.reminders import due
+
+    event = _event(5, id="evt1")
+    start = event["start"]["dateTime"]
+    assert due([event], {"evt1": start}, lead=20) == []
+
+
+def test_a_rescheduled_meeting_is_nudged_again():
+    """Google keeps the id when an event moves, so keying on the id alone would
+    suppress the nudge for the NEW time — exactly the case that most needs one,
+    a meeting postponed at the last minute after the first reminder went out."""
+    from assistant.reminders import due
+
+    moved = _event(5, id="evt1")
+    reminded_at_the_old_time = {"evt1": _event(90, id="evt1")["start"]["dateTime"]}
+    assert [e["id"] for e in due([moved], reminded_at_the_old_time, lead=20)] == ["evt1"]
+
+
+def test_the_same_start_written_differently_is_not_a_new_reminder():
+    """Instants, not strings: a reformatted offset must not read as a new time
+    and produce a duplicate nudge."""
+    from datetime import datetime, timedelta, timezone
+
+    from assistant.reminders import due
+
+    start = datetime.now(timezone.utc) + timedelta(minutes=5)
+    event = {"id": "evt1", "summary": "Standup", "start": {"dateTime": start.isoformat()}}
+    same_instant_elsewhere = start.astimezone(timezone(timedelta(hours=5))).isoformat()
+    assert due([event], {"evt1": same_instant_elsewhere}, lead=20) == []
+
+
+def test_all_day_events_are_not_nudged():
+    """'In 20 minutes' means nothing for something with no time, and a birthday
+    does not need a nudge."""
+    from assistant.reminders import due
+
+    assert due([{"id": "b", "summary": "Birthday", "start": {"date": "2026-08-20"}}], {}, 20) == []
+
+
+def test_a_cancelled_meeting_is_not_nudged():
+    from assistant.reminders import due
+
+    assert due([_event(5, status="cancelled")], {}, lead=20) == []
+
+
+def test_reminders_can_be_switched_off():
+    from assistant.reminders import due
+
+    assert due([_event(5)], {}, lead=0) == []
+
+
+def test_a_meeting_title_cannot_break_the_reminder():
+    """An event title is written by whoever created the event, which is not
+    necessarily the user — anyone who knows the address can send an invitation.
+    The nudge is sent as HTML, so a '<' in a meeting name would fail the send
+    and lose the reminder with it."""
+    from datetime import datetime, timezone
+
+    from assistant.reminders import _line
+
+    line = _line(_event(5, summary="Review <b>now</b>"), datetime.now(timezone.utc))
+    # The title's own markup arrives escaped. The <b> around it is ours, added
+    # deliberately — the test is that the two cannot be confused.
+    assert "&lt;b&gt;now&lt;/b&gt;" in line
+    assert "<b>now</b>" not in line
+
+
 # --- the telegram approval channel ------------------------------------------
 
 

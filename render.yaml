@@ -56,6 +56,10 @@ services:
         sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
+      # Calendar. Optional; leave unset to use the account's primary calendar.
+      # If you set it, set it on BOTH jobs — see the note on the other one.
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
 
   # The chat half. Two jobs in one, because both read the same Telegram offset
   # and polling it twice would have each confirm receipt of the other's updates:
@@ -111,3 +115,25 @@ services:
         sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
+      # Calendar. Needed here as well as on the sweep, for two reasons: an
+      # approved create/reschedule/cancel runs through the same MCP servers, so
+      # without these the calendar server never starts and the approved action
+      # fails at the moment it is least expected — and meeting reminders run on
+      # this job, because it already wakes on the interval a reminder needs.
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false
+      # Which calendar. Optional, but it must match the sweep's: _config()
+      # silently falls back to "primary", so a non-primary calendar set on one
+      # job and not the other means reminders read the wrong calendar and an
+      # approved reschedule cannot find the event it was approved for.
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      # How long before a meeting the nudge arrives. MUST be longer than this
+      # job's interval, or an event can start between two runs and be missed.
+      # Set to 0 to switch reminders off.
+      - key: ASSISTANT_REMINDER_MINUTES
+        value: "20"
