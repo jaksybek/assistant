@@ -173,6 +173,46 @@ def test_imap_search_quoting_neutralises_injection(payload):
     assert '\\"' in quoted or '"' not in quoted[1:-1]
 
 
+def _message(sender: str, subject: str):
+    import email as _email
+
+    return _email.message_from_string(f"From: {sender}\nSubject: {subject}\n\nbody")
+
+
+@pytest.mark.parametrize(
+    "subject", ["Morning briefing — Fri 14 Aug", "Assistant briefing FAILED — Fri 14 Aug"]
+)
+def test_the_agent_stops_reading_its_own_briefings(monkeypatch, subject):
+    """Structural, not a stray Gmail filter: the briefing is sent FROM the
+    mailbox that gets read, and All Mail contains Sent. Every sweep was
+    triaging yesterday's own output and reporting it back as noise."""
+    monkeypatch.setenv("MAIL_IMAP_USER", "bek@example.com")
+    from assistant.servers.mail.server import _is_own_briefing
+
+    assert _is_own_briefing(_message("Bek <bek@example.com>", subject))
+
+
+def test_ordinary_self_sent_mail_is_still_read(monkeypatch):
+    """Notes to self are legitimate mail. Only the agent's own briefing subjects
+    are hidden, not everything the mailbox ever sent."""
+    monkeypatch.setenv("MAIL_IMAP_USER", "bek@example.com")
+    from assistant.servers.mail.server import _is_own_briefing
+
+    assert not _is_own_briefing(_message("bek@example.com", "check taxes perspecta"))
+
+
+def test_a_stranger_cannot_hide_behind_the_briefing_subject(monkeypatch):
+    """Why this matches on sender as well as subject. If the subject alone were
+    enough, anyone who learned it could make their own mail invisible to triage
+    by copying it — and triage is what surfaces the deadlines that matter."""
+    monkeypatch.setenv("MAIL_IMAP_USER", "bek@example.com")
+    from assistant.servers.mail.server import _is_own_briefing
+
+    assert not _is_own_briefing(
+        _message("attacker@elsewhere.test", "Morning briefing — Fri 14 Aug")
+    )
+
+
 # --- credential scoping -----------------------------------------------------
 
 
