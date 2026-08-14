@@ -160,6 +160,13 @@ def default_settings() -> Settings:
             "calendar_list_events": Capability.READ,
             "calendar_search_events": Capability.READ,
             "calendar_read_event": Capability.READ,
+            # Drive is read-only by construction, like mail and calendar: there
+            # is no upload, edit, move or delete tool, the credential is scoped
+            # readonly, and the service account can only see the one folder
+            # shared with it. See servers/drive/server.py.
+            "drive_list_files": Capability.READ,
+            "drive_search_files": Capability.READ,
+            "drive_read_file": Capability.READ,
         },
         # Output written by someone other than the user. Reading any of these
         # taints the session: writes stop being automatic. A note counts —
@@ -180,6 +187,13 @@ def default_settings() -> Settings:
             "calendar_list_events",
             "calendar_search_events",
             "calendar_read_event",
+            # A transcript is whatever was said in the room, by anyone in it —
+            # and a file name is chosen by whatever dropped the file there. The
+            # recording pipeline is automated end to end, so nobody has read a
+            # word of this before the agent does.
+            "drive_list_files",
+            "drive_search_files",
+            "drive_read_file",
         },
     )
 
@@ -207,6 +221,21 @@ def default_settings() -> Settings:
                 command=sys.executable,
                 args=["-m", "assistant.servers.calendar.server"],
                 env_prefixes=("GOOGLE_CALENDAR_",),
+            )
+        )
+
+    # Same rule again. Keyed on the folder id as well as the key, because a
+    # service account with no folder configured has no boundary to enforce —
+    # better switched off than pointed at nothing.
+    if os.environ.get("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON") and os.environ.get(
+        "GOOGLE_DRIVE_FOLDER_ID"
+    ):
+        settings.servers.append(
+            MCPServer(
+                name="drive",
+                command=sys.executable,
+                args=["-m", "assistant.servers.drive.server"],
+                env_prefixes=("GOOGLE_DRIVE_",),
             )
         )
 
