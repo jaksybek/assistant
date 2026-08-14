@@ -1,4 +1,4 @@
-"""Drain the approval queue: turn button presses into executed actions.
+"""The chat end of the assistant: button presses, and messages as instructions.
 
 The nightly sweep runs on a stateless container that exits when it is done, so
 there is nobody left listening when a button is finally pressed. This is the
@@ -13,6 +13,14 @@ at the action and said yes. Everything that makes that safe happens before it:
 the decision must arrive from the one authorised chat (notify.is_authorised),
 and it must match an id that the gate itself queued. An id that is not in the
 pending file executes nothing.
+
+The same job also carries instructions. A message in the chat is run as a
+prompt and answered there, which is what makes the phone a usable front end:
+dictate into the message box, and the text you already read is what the agent
+acts on. That rests on the same allowlist — a bot username is public, so
+without it a stranger would be prompting an agent that can read the mailbox
+and the whole vault. Instructions are trusted because of who sent them; what
+the agent reads while carrying one out is not, and taint handles that.
 """
 
 from __future__ import annotations
@@ -91,6 +99,50 @@ async def _apply(decisions: list[dict]) -> list[str]:
     return outcomes
 
 
+async def _answer(instructions: list[dict]) -> list[str]:
+    """Run what the chat asked for, and reply with the result.
+
+    This is the whole of "voice control": dictation happens on the device, so
+    what arrives here is text the user has already seen and could correct. The
+    agent never hears audio, and so never acts on words nobody read.
+
+    Autonomous mode, deliberately. A human sent the message, but no human is at
+    a terminal to answer a prompt — so gated actions queue and come back as
+    buttons in the same chat, rather than blocking a job that is about to exit.
+
+    The instruction itself is trusted: it passed the sender allowlist, so it
+    came from the one chat allowed to drive this bot. What the agent then READS
+    while carrying it out is not, and the taint model handles that exactly as
+    it does during a sweep.
+    """
+    settings = default_settings()
+    settings.mode = "autonomous"
+    outcomes: list[str] = []
+
+    from .agent import Assistant
+
+    async with Assistant(settings) as assistant:
+        for instruction in instructions:
+            if instruction.get("unsupported") == "voice":
+                notify.send_reply(
+                    "I can't listen to voice notes. Dictate into the message box "
+                    "instead — then you see the text before it reaches me."
+                )
+                outcomes.append("voice note: declined")
+                continue
+            try:
+                reply = await assistant.send(instruction["text"])
+                notify.send_reply(reply)
+                outcomes.append(f"answered: {instruction['text'][:60]}")
+            except Exception as exc:
+                # Never leave a message unanswered: silence in a chat is
+                # indistinguishable from the bot being dead.
+                notify.send_reply(f"That failed: {type(exc).__name__}: {exc}")
+                outcomes.append(f"FAILED: {exc}")
+
+    return outcomes
+
+
 def _settle(decision: dict, text: str, toast: str) -> None:
     """Close the loop in the chat. Never fatal: the action has already happened
     (or not), and failing to redraw a message must not change that.
@@ -138,9 +190,11 @@ def main() -> None:
         os.environ.setdefault("ASSISTANT_SANDBOX_DIR", str(WORKDIR / "sandbox"))
 
     settings = default_settings()
-    decisions = notify.poll_decisions(settings.telegram_offset_path)
-    if not decisions:
-        print("no decisions")
+    updates = notify.poll_updates(settings.telegram_offset_path)
+    decisions, instructions = updates["decisions"], updates["instructions"]
+
+    if not decisions and not instructions:
+        print("nothing waiting")
         # The offset may still have moved, so push before leaving.
         if stateful:
             from .cron import push_state
@@ -149,8 +203,14 @@ def main() -> None:
         return
 
     try:
-        for line in asyncio.run(_apply(decisions)):
-            print(line)
+        # Decisions first: an approval the user already gave should not wait
+        # behind a question they asked afterwards.
+        if decisions:
+            for line in asyncio.run(_apply(decisions)):
+                print(line)
+        if instructions:
+            for line in asyncio.run(_answer(instructions)):
+                print(line)
     finally:
         if stateful:
             from .cron import push_state

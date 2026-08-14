@@ -57,15 +57,28 @@ services:
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
 
-  # The other half of the approval loop. The sweep above exits as soon as it is
-  # done, so nothing is listening when a button is finally pressed. This wakes
-  # up, asks Telegram what was decided since last time, runs it, and exits. The
-  # interval is how long an approval waits; each run is a few seconds.
+  # The chat half. Two jobs in one, because both read the same Telegram offset
+  # and polling it twice would have each confirm receipt of the other's updates:
+  #
+  #   * the other end of the approval loop — the sweep above exits as soon as it
+  #     is done, so nothing is listening when a button is finally pressed;
+  #   * instructions typed (or dictated) into the chat, run as prompts, answered
+  #     back in the same chat.
+  #
+  # The interval IS the responsiveness. At 15 minutes an approval lands fine and
+  # a question does not: a reply a quarter of an hour later is not a
+  # conversation. Two minutes is the compromise — still a cron, no always-on
+  # service to pay for, and each idle run is a container start, a git fetch and
+  # one HTTP call. Raise it if the container minutes are not worth it; drop to a
+  # webhook web service if you want it instant.
+  #
+  # NOTE: Render does not re-sync a blueprint after the first deploy. Changing
+  # this line does NOT change the live schedule — edit it in the dashboard.
   - type: cron
     name: assistant-approvals
     runtime: python
     plan: starter
-    schedule: "*/15 * * * *"
+    schedule: "*/2 * * * *"
     buildCommand: pip install uv && uv sync --frozen --no-dev
     startCommand: uv run assistant-approve
     envVars:
