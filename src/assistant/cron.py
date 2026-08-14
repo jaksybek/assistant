@@ -133,6 +133,100 @@ def _preflight() -> None:
         raise RuntimeError("Bad configuration: " + "; ".join(problems))
 
     _check_logins()
+    _check_drive()
+
+
+def _check_drive() -> None:
+    """Prove the recordings folder is reachable before the sweep starts.
+
+    This exists because of how the Drive integration failed the first time it
+    ran for real: every token exchange returned 400, the agent treated it as an
+    ordinary tool error and carried on, and the job still reported success. A
+    dead integration looked exactly like a working one with nothing to do — it
+    could have stayed broken for weeks, visible only as notes never appearing.
+
+    Two deliberate choices:
+
+    * It fetches the FOLDER, not a listing of it. A listing cannot tell "no
+      recordings yet" from "shared with the wrong address" — both come back
+      empty. Fetching the folder answers 404 when the service account cannot
+      see it, and that is the likeliest mistake in the whole setup: every other
+      step is visible in a dashboard, but a share with a mistyped address looks
+      identical to a correct one.
+
+    * Configuration failures are fatal; transient ones are not. A wrong key or
+      an unshared folder will not fix itself and must stop the run — the failure
+      mail is how it reaches him. But Drive is optional and mail is not, so a
+      network blip must never cost the morning briefing.
+    """
+    key = os.environ.get("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON")
+    folder = (os.environ.get("GOOGLE_DRIVE_FOLDER_ID") or "").strip()
+
+    # Not configured is not broken — the same rule the server registry follows.
+    if not key and not folder:
+        return
+
+    # Half-configured IS broken, and silently so: config.py starts the server
+    # only when both halves are present, so the agent would simply have no
+    # recordings and never say why.
+    if not (key and folder):
+        missing = "GOOGLE_DRIVE_FOLDER_ID" if key else "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON"
+        raise RuntimeError(
+            f"Drive is half-configured: {missing} is not set, so the Drive server will "
+            "not start and no recording will ever be read. Set it, or clear both."
+        )
+
+    import urllib.parse
+
+    import httpx
+
+    from .servers.drive.server import _access_token, _service_account
+
+    try:
+        address = _service_account().get("client_email", "the service account")
+        token = _access_token()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Drive credentials rejected: {exc}. The service-account key is wrong, "
+            "malformed, or has been deleted in the Google Cloud console."
+        ) from None
+    print("[preflight] Drive token         ok", flush=True)
+
+    try:
+        response = httpx.get(
+            f"https://www.googleapis.com/drive/v3/files/{urllib.parse.quote(folder, safe='')}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"fields": "id,name", "supportsAllDrives": "true"},
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        # Transient. Say so and let the sweep run: the mail half still works, and
+        # a briefing without recordings beats no briefing at all.
+        print(f"[preflight] Drive folder        UNREACHABLE ({exc}) — continuing", flush=True)
+        return
+
+    if response.status_code == 200:
+        print(f"[preflight] Drive folder        {response.json().get('name')!r} ok", flush=True)
+        return
+
+    if response.status_code in (403, 404):
+        raise RuntimeError(
+            f"The Drive folder {folder} is not visible to {address}. Share that one "
+            "folder with that address (Viewer is enough), or the id is wrong. Until "
+            "then no recording can be read, however well everything else works."
+        )
+
+    if response.status_code >= 500:
+        print(
+            f"[preflight] Drive folder        Google returned {response.status_code}"
+            " — continuing",
+            flush=True,
+        )
+        return
+
+    raise RuntimeError(
+        f"Drive folder check failed ({response.status_code}): {response.text[:200]}"
+    )
 
 
 def _check_logins() -> None:
