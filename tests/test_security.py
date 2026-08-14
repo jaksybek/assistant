@@ -775,6 +775,34 @@ def test_recordings_are_only_swept_when_drive_is_configured(settings):
     assert RECORDINGS in sweep_prompt(settings)
 
 
+def test_both_jobs_declare_every_credential_they_need():
+    """Twice a credential has been declared for one job and needed by both: the
+    calendar was missing from the approvals job, so an approved reschedule
+    would have failed after the button was pressed — then missing from the
+    nightly job, so the briefing would quietly have had no schedule.
+
+    Both failures are silent, and that is what makes them worth a test: a
+    server whose credentials are absent does not error, it simply never
+    registers, and the feature is missing rather than broken.
+    """
+    from pathlib import Path
+
+    blueprint = (Path(__file__).resolve().parents[1] / "render.yaml").read_text(encoding="utf-8")
+    nightly, approvals = blueprint.split("name: assistant-approvals")
+
+    needed = (
+        "GOOGLE_CALENDAR_REFRESH_TOKEN",
+        "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+        "GOOGLE_DRIVE_FOLDER_ID",
+        "TELEGRAM_BOT_TOKEN",
+        "MAIL_IMAP_USER",
+        "ASSISTANT_STATE_REPO",
+    )
+    for job, block in (("assistant-nightly", nightly), ("assistant-approvals", approvals)):
+        for key in needed:
+            assert key in block, f"{key} is not declared for {job}"
+
+
 def test_the_day_is_only_briefed_when_the_calendar_is_configured(settings):
     """Same rule, and each half is independent: Drive without calendar must not
     drag in an instruction to read a calendar that is not there."""

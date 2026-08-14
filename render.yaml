@@ -56,8 +56,20 @@ services:
         sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
-      # Calendar. Optional; leave unset to use the account's primary calendar.
-      # If you set it, set it on BOTH jobs — see the note on the other one.
+      # Calendar. Needed here for the briefing to open with the day: the
+      # server registers only when the refresh token is present, so a job
+      # missing these credentials silently has no calendar tools and the
+      # schedule section is never added — a briefing that looks complete and
+      # is not. The same three are on the other job, for approved writes and
+      # for reminders.
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false
+      # Optional; leave unset to use the account's primary calendar. If you set
+      # it, set it on BOTH jobs, or they read different calendars.
       - key: GOOGLE_CALENDAR_ID
         sync: false
 
