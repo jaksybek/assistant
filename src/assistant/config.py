@@ -153,13 +153,18 @@ def default_settings() -> Settings:
             "mail_search_messages": Capability.READ,
             "mail_read_message": Capability.READ,
             "mail_read_recent": Capability.READ,
-            # Calendar is read-only by construction, like mail: there is no
-            # create/move/cancel tool to classify, and the OAuth token is
-            # scoped readonly so one could not work if it existed. When writes
-            # arrive they are EXTERNAL — see servers/calendar/server.py.
             "calendar_list_events": Capability.READ,
             "calendar_search_events": Capability.READ,
             "calendar_read_event": Capability.READ,
+            # Calendar writes. EXTERNAL in every mode, no exceptions, and this
+            # is the classification the whole calendar design rests on: a
+            # forged "the meeting moved to Friday" needs no credentials, only
+            # an address. The agent may PROPOSE a change from something it
+            # read; it must never be able to make one. Cancelling is also
+            # irreversible from here — the invitees are already notified.
+            "calendar_create_event": Capability.EXTERNAL,
+            "calendar_reschedule_event": Capability.EXTERNAL,
+            "calendar_cancel_event": Capability.EXTERNAL,
             # Drive is read-only by construction, like mail and calendar: there
             # is no upload, edit, move or delete tool, the credential is scoped
             # readonly, and the service account can only see the one folder
