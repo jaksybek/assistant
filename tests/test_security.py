@@ -775,6 +775,20 @@ def test_recordings_are_only_swept_when_drive_is_configured(settings):
     assert RECORDINGS in sweep_prompt(settings)
 
 
+def test_the_day_is_only_briefed_when_the_calendar_is_configured(settings):
+    """Same rule, and each half is independent: Drive without calendar must not
+    drag in an instruction to read a calendar that is not there."""
+    from assistant.config import MCPServer
+    from assistant.nightly import CALENDAR, RECORDINGS, sweep_prompt
+
+    settings.servers.append(MCPServer(name="drive", command="python"))
+    assert CALENDAR not in sweep_prompt(settings)
+
+    settings.servers.append(MCPServer(name="calendar", command="python"))
+    prompt = sweep_prompt(settings)
+    assert CALENDAR in prompt and RECORDINGS in prompt
+
+
 def test_recordings_are_linked_without_needing_a_gated_write(settings):
     """The note is built by APPEND, which adds to the end and cannot rewrite. So
     'Связи' has to be written when the note is first created — instructing a
