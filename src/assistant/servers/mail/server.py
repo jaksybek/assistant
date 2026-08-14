@@ -156,8 +156,38 @@ def _decode(part: Message) -> str:
     return payload.decode(charset, errors="replace")
 
 
+# The subjects nightly.py sends under. Duplicated here rather than imported:
+# this server runs as its own subprocess and must not pull in the agent.
+BRIEFING_SUBJECTS = ("Morning briefing", "Assistant briefing FAILED")
+
+
+def _is_own_briefing(msg: Message) -> bool:
+    """Is this a briefing this agent sent, arriving back as readable mail?
+
+    It is, constantly, and the cause is structural rather than a stray filter.
+    The briefing is sent FROM the mailbox that gets read, and Gmail's
+    "[Gmail]/All Mail" — which this server is pointed at deliberately, because
+    INBOX silently misses forwarded mail — contains Sent. So every briefing
+    comes back as inbound mail, and each sweep spends part of its budget
+    triaging yesterday's own output and reporting it back as noise.
+
+    Matched on sender AND subject rather than on a header we add ourselves, for
+    two reasons: this also hides the ones already sitting in the mailbox, which
+    a new header could not; and a header is something any sender can set, which
+    would hand strangers a way to make their own mail invisible to triage.
+    """
+    mailbox = (os.environ.get("MAIL_IMAP_USER") or "").strip().lower()
+    if not mailbox:
+        return False
+    # A From header is a display name plus an address, so match on containment.
+    if mailbox not in _header(msg, "From").lower():
+        return False
+    return _header(msg, "Subject").startswith(BRIEFING_SUBJECTS)
+
+
 def _summarise(conn: imaplib.IMAP4_SSL, uids: list[bytes]) -> str:
     lines = []
+    own = 0
     for uid in uids:
         # BODY.PEEK never sets the \Seen flag — reading leaves no trace.
         status, data = conn.uid(
@@ -166,12 +196,20 @@ def _summarise(conn: imaplib.IMAP4_SSL, uids: list[bytes]) -> str:
         if status != "OK" or not data or not isinstance(data[0], tuple):
             continue
         msg = email.message_from_bytes(data[0][1])
+        if _is_own_briefing(msg):
+            own += 1
+            continue
         lines.append(
             f"uid={uid.decode()}  {_header(msg, 'Date')}\n"
             f"  from:    {_header(msg, 'From')}\n"
             f"  subject: {_header(msg, 'Subject')}"
         )
-    return "\n".join(lines) if lines else "(no messages)"
+    summary = "\n".join(lines) if lines else "(no messages)"
+    # Say what was hidden. Silent filtering is how a mailbox quietly stops
+    # showing something and nobody notices for a month.
+    if own:
+        summary += f"\n\n({own} of this agent's own briefings hidden)"
+    return summary
 
 
 @mcp.tool()
