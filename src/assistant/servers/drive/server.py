@@ -184,6 +184,12 @@ def _access_token() -> str:
             "exp": issued + 3600,
         },
     )
+    # google-auth signs to BYTES, and httpx form-encodes bytes as their Python
+    # repr — the literal b'eyJ...' — which Google rejects with an opaque 400 that
+    # names nothing. Send text.
+    if isinstance(assertion, bytes):
+        assertion = assertion.decode("ascii")
+
     response = httpx.post(
         info.get("token_uri", TOKEN_URL),
         data={"grant_type": JWT_GRANT, "assertion": assertion},

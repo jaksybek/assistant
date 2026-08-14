@@ -559,6 +559,54 @@ def test_a_long_transcript_cannot_flood_the_context(drive, monkeypatch):
     assert len(out) < drive.MAX_CONTENT_CHARS + 2000
 
 
+def test_the_token_assertion_is_sent_as_text(drive, monkeypatch):
+    """google-auth signs to bytes, and httpx form-encodes bytes as their Python
+    repr — the literal b'eyJ...' — so Google receives a malformed assertion and
+    answers 400 with nothing that names the cause. Cost a deploy to find; pinned
+    here so it cannot come back.
+    """
+    import json as _json
+
+    from google.auth import crypt, jwt
+
+    monkeypatch.setenv(
+        "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+        _json.dumps(
+            {
+                "client_email": "reader@project.iam.gserviceaccount.com",
+                "private_key": "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        crypt.RSASigner, "from_service_account_info", classmethod(lambda cls, info: object())
+    )
+    monkeypatch.setattr(jwt, "encode", lambda signer, payload: b"header.payload.signature")
+
+    sent: dict[str, object] = {}
+
+    class _TokenResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"access_token": "token", "expires_in": 3600}
+
+    def _post(url, data=None, timeout=None):
+        sent.update(data or {})
+        return _TokenResponse()
+
+    monkeypatch.setattr(drive.httpx, "post", _post)
+    # The module caches its token; clear it so this call really does the exchange.
+    monkeypatch.setitem(drive._token, "value", None)
+
+    drive._access_token()
+
+    assert isinstance(sent["assertion"], str)
+    assert not str(sent["assertion"]).startswith("b'")
+
+
 # --- the telegram approval channel ------------------------------------------
 
 
