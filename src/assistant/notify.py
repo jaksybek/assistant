@@ -41,6 +41,10 @@ API = "https://api.telegram.org"
 # a whole note. Truncate the input, not the framing around it.
 MAX_INPUT_CHARS = 800
 
+# The same cap, applied to an agent reply. Left below 4096 so the escaping
+# cannot push a just-legal message over the edge.
+MAX_REPLY_CHARS = 3800
+
 
 def _token() -> str:
     token = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -152,60 +156,99 @@ def _save_offset(path: Path, offset: int) -> None:
 
 
 def is_authorised(update: dict[str, Any]) -> bool:
-    """Did this come from the one chat allowed to approve things?
+    """Did this come from the one chat allowed to drive this bot?
 
     Anyone can find a bot and press nothing — but anyone can also send it a
     callback-shaped message, and an eight-character id is not a secret. The
-    sender is the only thing that authorises a decision here.
+    sender is the only thing that authorises anything here.
+
+    This now governs instructions as well as decisions, and it matters more for
+    them: a bot username is public, so without this check any stranger who
+    found the bot would be typing straight into an agent that can read the
+    mailbox and the whole vault.
     """
-    callback = update.get("callback_query") or {}
-    sender = str((callback.get("from") or {}).get("id", ""))
+    origin = update.get("callback_query") or update.get("message") or {}
+    sender = str((origin.get("from") or {}).get("id", ""))
     return bool(sender) and sender == _chat_id()
 
 
-def poll_decisions(offset_path: Path) -> list[dict[str, Any]]:
-    """Collect button presses since the last run.
+def send_reply(text: str) -> None:
+    """Send an agent reply back to the chat.
 
-    Returns one dict per authorised decision: entry_id, verdict ('approve' or
-    'deny'), and the callback/message ids needed to answer it.
+    Escaped, because `send` posts as HTML and a reply is free text the agent
+    composed — one stray '<' would fail the send and lose the answer with it.
+    Truncated, because Telegram rejects anything past 4096 characters outright,
+    and a briefing-length answer clears that easily.
+    """
+    body = text.strip() or "(no answer)"
+    if len(body) > MAX_REPLY_CHARS:
+        body = body[:MAX_REPLY_CHARS] + "\n\n[…truncated]"
+    send(html.escape(body))
+
+
+def poll_updates(offset_path: Path) -> dict[str, list[dict[str, Any]]]:
+    """Collect everything the chat has sent since the last run.
+
+    Returns two lists. `decisions` are button presses: entry_id, verdict
+    ('approve' or 'deny'), and the ids needed to answer them. `instructions`
+    are messages typed (or dictated) into the chat, to be run as prompts.
+
+    ONE call for both, deliberately. They share the offset file, so polling
+    them separately would have each half confirm receipt of the other's
+    updates and silently drop them — the kind of loss that shows up as an
+    occasional ignored message and is near-impossible to reproduce.
+
+    Voice notes are reported rather than transcribed. Dictation belongs on the
+    device, where the text can be corrected before it is sent; a recogniser on
+    this end would act on words nobody had read.
     """
     updates = _call(
         "getUpdates",
         offset=_offset(offset_path),
         timeout=0,
-        allowed_updates=["callback_query"],
+        allowed_updates=["callback_query", "message"],
     )
     if not isinstance(updates, list):
-        return []
+        return {"decisions": [], "instructions": []}
 
     decisions: list[dict[str, Any]] = []
+    instructions: list[dict[str, Any]] = []
     highest = 0
     for update in updates:
         highest = max(highest, int(update.get("update_id", 0)))
-        callback = update.get("callback_query")
-        if not callback:
-            continue
         if not is_authorised(update):
             # Deliberately silent: do not tell an unknown sender that the id
-            # they guessed exists, or that this bot approves anything.
+            # they guessed exists, that this bot approves anything, or that
+            # anyone is home at all.
             continue
-        data = str(callback.get("data", ""))
-        verb, _, entry_id = data.partition(":")
-        if verb not in {"ok", "no"} or not entry_id:
+
+        callback = update.get("callback_query")
+        if callback:
+            data = str(callback.get("data", ""))
+            verb, _, entry_id = data.partition(":")
+            if verb not in {"ok", "no"} or not entry_id:
+                continue
+            message = callback.get("message") or {}
+            decisions.append(
+                {
+                    "id": entry_id,
+                    "verdict": "approve" if verb == "ok" else "deny",
+                    "callback_id": callback.get("id"),
+                    "chat_id": (message.get("chat") or {}).get("id"),
+                    "message_id": message.get("message_id"),
+                }
+            )
             continue
-        message = callback.get("message") or {}
-        decisions.append(
-            {
-                "id": entry_id,
-                "verdict": "approve" if verb == "ok" else "deny",
-                "callback_id": callback.get("id"),
-                "chat_id": (message.get("chat") or {}).get("id"),
-                "message_id": message.get("message_id"),
-            }
-        )
+
+        message = update.get("message") or {}
+        text = (message.get("text") or "").strip()
+        if text:
+            instructions.append({"text": text, "message_id": message.get("message_id")})
+        elif message.get("voice") or message.get("audio"):
+            instructions.append({"unsupported": "voice"})
 
     if highest:
         # Confirm receipt of everything seen, including updates we ignored —
         # otherwise an unauthorised press would be replayed on every future run.
         _save_offset(offset_path, highest + 1)
-    return decisions
+    return {"decisions": decisions, "instructions": instructions}
