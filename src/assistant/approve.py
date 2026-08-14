@@ -191,38 +191,38 @@ def main() -> None:
 
     settings = default_settings()
 
-    # Meeting reminders ride on this job rather than a service of their own:
-    # it already wakes on the interval a reminder needs, and a reminder is
-    # arithmetic, not a job for a language model.
+    # EVERYTHING that can touch state goes inside this try. On a stateless host
+    # the clone is reset from the remote on the next run, so any write that
+    # escapes the push is not merely unsaved — it is undone. Reminders write
+    # `reminded.json` before the polling happens, so a failure in getUpdates
+    # used to discard the record of nudges already delivered, and the next run
+    # sent every one of them again.
     try:
-        for line in reminders.run(settings):
-            print(line)
-    except Exception as exc:
-        # A calendar problem must not swallow the approval queue. Reminders are
-        # the least important thing this job does.
-        print(f"[reminders] skipped: {exc}", flush=True)
-
-    updates = notify.poll_updates(settings.telegram_offset_path)
-    decisions, instructions = updates["decisions"], updates["instructions"]
-
-    if not decisions and not instructions:
-        print("nothing waiting")
-        # The offset may still have moved, so push before leaving.
-        if stateful:
-            from .cron import push_state
-
-            print(push_state())
-        return
-
-    try:
-        # Decisions first: an approval the user already gave should not wait
-        # behind a question they asked afterwards.
-        if decisions:
-            for line in asyncio.run(_apply(decisions)):
+        # Meeting reminders ride on this job rather than a service of their
+        # own: it already wakes on the interval a reminder needs, and a
+        # reminder is arithmetic, not a job for a language model.
+        try:
+            for line in reminders.run(settings):
                 print(line)
-        if instructions:
-            for line in asyncio.run(_answer(instructions)):
-                print(line)
+        except Exception as exc:
+            # A calendar problem must not swallow the approval queue. Reminders
+            # are the least important thing this job does.
+            print(f"[reminders] skipped: {exc}", flush=True)
+
+        updates = notify.poll_updates(settings.telegram_offset_path)
+        decisions, instructions = updates["decisions"], updates["instructions"]
+
+        if not decisions and not instructions:
+            print("nothing waiting")
+        else:
+            # Decisions first: an approval the user already gave should not
+            # wait behind a question they asked afterwards.
+            if decisions:
+                for line in asyncio.run(_apply(decisions)):
+                    print(line)
+            if instructions:
+                for line in asyncio.run(_answer(instructions)):
+                    print(line)
     finally:
         if stateful:
             from .cron import push_state

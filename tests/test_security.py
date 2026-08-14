@@ -916,7 +916,32 @@ def test_nobody_is_nudged_twice():
     from assistant.reminders import due
 
     event = _event(5, id="evt1")
-    assert due([event], {"evt1": "whenever"}, lead=20) == []
+    start = event["start"]["dateTime"]
+    assert due([event], {"evt1": start}, lead=20) == []
+
+
+def test_a_rescheduled_meeting_is_nudged_again():
+    """Google keeps the id when an event moves, so keying on the id alone would
+    suppress the nudge for the NEW time — exactly the case that most needs one,
+    a meeting postponed at the last minute after the first reminder went out."""
+    from assistant.reminders import due
+
+    moved = _event(5, id="evt1")
+    reminded_at_the_old_time = {"evt1": _event(90, id="evt1")["start"]["dateTime"]}
+    assert [e["id"] for e in due([moved], reminded_at_the_old_time, lead=20)] == ["evt1"]
+
+
+def test_the_same_start_written_differently_is_not_a_new_reminder():
+    """Instants, not strings: a reformatted offset must not read as a new time
+    and produce a duplicate nudge."""
+    from datetime import datetime, timedelta, timezone
+
+    from assistant.reminders import due
+
+    start = datetime.now(timezone.utc) + timedelta(minutes=5)
+    event = {"id": "evt1", "summary": "Standup", "start": {"dateTime": start.isoformat()}}
+    same_instant_elsewhere = start.astimezone(timezone(timedelta(hours=5))).isoformat()
+    assert due([event], {"evt1": same_instant_elsewhere}, lead=20) == []
 
 
 def test_all_day_events_are_not_nudged():

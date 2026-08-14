@@ -94,9 +94,7 @@ def due(events: list[dict[str, Any]], already_sent: dict[str, str], lead: int) -
     upcoming = []
     for event in events:
         event_id = str(event.get("id", ""))
-        if not event_id or event_id in already_sent:
-            continue
-        if event.get("status") == "cancelled":
+        if not event_id or event.get("status") == "cancelled":
             continue
         start = (event.get("start") or {}).get("dateTime")
         if not start:  # all-day
@@ -106,6 +104,15 @@ def due(events: list[dict[str, Any]], already_sent: dict[str, str], lead: int) -
         # water under the bridge, and reminding about it is worse than silence.
         if moment is None or not (now <= moment <= horizon):
             continue
+        # Keyed on the id AND the start, never the id alone. Google keeps the
+        # id when an event is rescheduled, so an id-only check would suppress
+        # the nudge for the NEW time — exactly the case that most needs one, a
+        # meeting postponed at the last minute after the first reminder went
+        # out. Compared as instants, so a reformatted offset is not a new time.
+        if event_id in already_sent:
+            seen = _parse(already_sent[event_id])
+            if seen is None or seen == moment:
+                continue
         upcoming.append(event)
     return upcoming
 
@@ -150,8 +157,10 @@ def run(settings: Any) -> list[str]:
     for event in due(list(payload.get("items", [])), already, lead):
         notify.send(_line(event, now))
         already[str(event["id"])] = (event.get("start") or {}).get("dateTime", "")
+        # Recorded after EACH send, not once at the end. With several meetings
+        # due together, a failure on the second would otherwise lose the record
+        # of the first, and the next run two minutes later would send it again.
+        _save(path, already)
         sent.append(f"reminded: {event.get('summary', event['id'])}")
 
-    if sent:
-        _save(path, already)
     return sent
