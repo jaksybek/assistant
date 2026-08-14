@@ -607,6 +607,31 @@ def test_the_token_assertion_is_sent_as_text(drive, monkeypatch):
     assert not str(sent["assertion"]).startswith("b'")
 
 
+def test_recordings_are_only_swept_when_drive_is_configured(settings):
+    """Telling the model to use tools it was never given reads as a failure from
+    the inside: it spends turns discovering the absence instead of working."""
+    from assistant.config import MCPServer
+    from assistant.nightly import RECORDINGS, sweep_prompt
+
+    assert RECORDINGS not in sweep_prompt(settings)
+
+    settings.servers.append(MCPServer(name="drive", command="python"))
+    assert RECORDINGS in sweep_prompt(settings)
+
+
+def test_recordings_are_linked_without_needing_a_gated_write(settings):
+    """The note is built by APPEND, which adds to the end and cannot rewrite. So
+    'Связи' has to be written when the note is first created — instructing a
+    later edit would need notes_save, which is EXTERNAL and would sit in the
+    approval queue every single night."""
+    from assistant.config import Capability
+    from assistant.nightly import RECORDINGS
+
+    assert "ONE append" in RECORDINGS
+    assert settings.capabilities["notes_append"] is Capability.APPEND
+    assert settings.capabilities["notes_save"] is Capability.EXTERNAL
+
+
 # --- the telegram approval channel ------------------------------------------
 
 
