@@ -24,18 +24,36 @@ Deliberate omissions, each one a security decision:
   This matters more than it does for mail, not less. Mail looks like mail; a
   calendar entry looks like something the user decided.
 
-* Writes are the interesting half and are deliberately not here yet. When they
-  come they are EXTERNAL — always gated, in every mode, exactly like deleting a
-  note — and the flow is: mail implies a change, the agent PROPOSES it, the
+* Writes are here now, and every one of them is EXTERNAL — always gated, in
+  every mode, exactly like deleting a note. The flow is the one the roadmap
+  called for: mail or a recording implies a change, the agent PROPOSES it, the
   proposal arrives on the phone as a button. The agent never infers a calendar
-  change from a message. See assistant/roadmap.md in the vault for why: a
-  forged "the meeting has moved to Friday" needs no credentials, only an
-  address, and it fails as a missed meeting rather than as an alarm.
+  change from a message. A forged "the meeting has moved to Friday" needs no
+  credentials, only an address, and it fails as a missed meeting rather than as
+  an alarm — so it must never be able to move anything on its own.
+
+* Adding writes cost a real safety property, knowingly. The token used to be
+  scoped `calendar.readonly`, so a fully compromised server could not write
+  whatever else went wrong. Writing needs `calendar.events`, and that belt is
+  now gone; the gate is the remaining brace. Two things were added to make up
+  for it:
+
+  - Every tool that touches an EXISTING event takes `expected_summary` and
+    refuses unless it matches the event's real title. That makes the approval
+    legible — the human sees which meeting, not an opaque id — and it makes the
+    description CHECKED rather than trusted: an agent talked into cancelling
+    the wrong thing has to name it correctly first, and the name is verified
+    against Google at execution time, after the human has read it.
+
+  - Times must carry an explicit UTC offset. A naive datetime would be
+    interpreted in whatever timezone the server happens to think in, which is
+    how an event silently lands five hours out.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -48,9 +66,14 @@ mcp = MCPServer("calendar")
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/calendar/v3"
 
-# Read-only, and not negotiable from inside this process. Requesting a wider
-# scope would be a code change and a re-consent, both of them visible.
-SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+# Events only — not calendar settings, not sharing, not deletion of whole
+# calendars. Widening this is a code change AND a re-consent in Google, both of
+# them visible; it is not something this process can decide.
+SCOPE = "https://www.googleapis.com/auth/calendar.events"
+
+# A trailing +HH:MM or -HH:MM. Checked rather than parsed: the point is only
+# that the caller stated an offset, not what it is.
+_OFFSET = re.compile(r"[+-]\d{2}:\d{2}$")
 
 MAX_RESULTS = 50
 # A description can hold an entire meeting agenda — or an entire injected
@@ -258,6 +281,103 @@ def read_event(event_id: str) -> str:
         f"creator: {event.get('creator', {}).get('email', '?')}\n\n"
         f"{UNTRUSTED_HEADER}\n{body}{UNTRUSTED_FOOTER}"
     )
+
+
+def _require_offset(label: str, value: str) -> str:
+    """Refuse a time without an explicit UTC offset.
+
+    Google accepts a naive dateTime and resolves it against the calendar's
+    timezone, which is not knowable here — so an event dictated as "3pm" could
+    land hours away with nothing in the log looking wrong. Demanding the offset
+    pushes the ambiguity back to the caller, where it can still be seen.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"{label} is required, as RFC3339 with an offset.")
+    if not (text.endswith("Z") or _OFFSET.search(text)):
+        raise ValueError(
+            f"{label} must carry an explicit UTC offset — '2026-08-20T15:00:00+05:00' "
+            f"or '...Z', not {text!r}. Without one the time is a guess."
+        )
+    return text
+
+
+def _verify(event_id: str, expected_summary: str) -> dict[str, Any]:
+    """Fetch the event and refuse unless its title is the one being claimed.
+
+    This is what keeps a gated calendar change honest. The human approving it
+    sees a title rather than an opaque id, so they can tell which meeting is
+    being touched — and because the title is checked against Google at
+    execution time, the description is verified rather than taken on trust. An
+    agent talked by an email into cancelling the wrong meeting has to name that
+    meeting correctly first.
+    """
+    event = _get(f"/events/{_quote(event_id)}")
+    actual = (event.get("summary") or "").strip()
+    if actual.casefold() != (expected_summary or "").strip().casefold():
+        raise ValueError(
+            f"Refusing: event {event_id} is {actual!r}, not {expected_summary!r}. "
+            "Read the event again and re-propose with its real title."
+        )
+    return event
+
+
+def _write(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    _, _, _, calendar_id = _config()
+    response = httpx.request(
+        method,
+        f"{API}/calendars/{_quote(calendar_id)}{path}",
+        headers={"Authorization": f"Bearer {_access_token()}"},
+        json=body,
+        timeout=30,
+    )
+    if response.status_code not in (200, 204):
+        raise RuntimeError(f"Calendar write failed ({response.status_code}): {response.text[:300]}")
+    return dict(response.json()) if response.content else {}
+
+
+@mcp.tool()
+def create_event(summary: str, start: str, end: str, description: str = "") -> str:
+    """Create an event. Times are RFC3339 and MUST carry a UTC offset, e.g.
+    '2026-08-20T15:00:00+05:00'. Always requires human approval."""
+    if not (summary or "").strip():
+        raise ValueError("An event needs a title — it is what the human sees when approving.")
+    body: dict[str, Any] = {
+        "summary": summary.strip(),
+        "start": {"dateTime": _require_offset("start", start)},
+        "end": {"dateTime": _require_offset("end", end)},
+    }
+    if description.strip():
+        body["description"] = description.strip()
+    event = _write("POST", "/events", body)
+    return f"Created '{event.get('summary', summary)}' ({_when(event)}), id={event.get('id', '?')}."
+
+
+@mcp.tool()
+def reschedule_event(event_id: str, expected_summary: str, start: str, end: str) -> str:
+    """Move an event to a new time. `expected_summary` must be the event's
+    current title — the call is refused if it does not match, so the human
+    approving it can see which meeting this is. Always requires approval."""
+    _verify(event_id, expected_summary)
+    event = _write(
+        "PATCH",
+        f"/events/{_quote(event_id)}",
+        {
+            "start": {"dateTime": _require_offset("start", start)},
+            "end": {"dateTime": _require_offset("end", end)},
+        },
+    )
+    return f"Moved '{event.get('summary', expected_summary)}' to {_when(event)}."
+
+
+@mcp.tool()
+def cancel_event(event_id: str, expected_summary: str) -> str:
+    """Cancel an event. `expected_summary` must be the event's current title —
+    the call is refused if it does not match. Always requires approval, and
+    cannot be undone from here."""
+    _verify(event_id, expected_summary)
+    _write("DELETE", f"/events/{_quote(event_id)}")
+    return f"Cancelled '{expected_summary}'."
 
 
 def main() -> None:

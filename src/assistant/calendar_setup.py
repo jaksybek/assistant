@@ -9,9 +9,20 @@ project with credentials pasted from screenshots.
 Run once. The refresh token it prints goes in .env and is long-lived; the
 short-lived access tokens are fetched from it at runtime and never stored.
 
-The consent screen will say READ-ONLY access to your calendars, because that
-is the only scope requested (see servers/calendar/server.py). If it offers to
-grant more, something is wrong — stop and say so.
+The consent screen will say the agent can see AND edit events — the scope is
+`calendar.events`, because creating, moving and cancelling now exist. It should
+NOT offer calendar settings, sharing, or deleting whole calendars; if it does,
+something is wrong, so stop and say so.
+
+That widening retires a safety property worth naming out loud: under the old
+read-only token, no bug anywhere in this system could have changed the
+calendar. Now one credential can, and the approval gate is what stands in the
+way — every write is EXTERNAL, gated in every mode, and the tools that touch an
+existing event refuse unless the caller names that event's real title.
+
+Anyone re-running this after the read-only version must RE-CONSENT: a refresh
+token keeps the scope it was granted with, so calendar writes go on failing
+with 403 until a new token is issued.
 """
 
 from __future__ import annotations
@@ -30,7 +41,7 @@ from dotenv import load_dotenv
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+SCOPE = "https://www.googleapis.com/auth/calendar.events"
 
 HOW_TO_GET_A_CLIENT = """\
 No client credentials found.
@@ -119,7 +130,7 @@ def main() -> None:
     thread = threading.Thread(target=server.handle_request, daemon=True)
     thread.start()
 
-    print("Opening your browser to authorise READ-ONLY calendar access.")
+    print("Opening your browser to authorise calendar access (see and edit events).")
     print("If it does not open, paste this into your browser:\n")
     print(url, "\n")
     webbrowser.open(url)
