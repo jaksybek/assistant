@@ -31,7 +31,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from . import notify
+from . import notify, reminders
 from .approvals import load_pending, save_pending
 from .audit import AuditLog
 from .config import default_settings
@@ -190,6 +190,18 @@ def main() -> None:
         os.environ.setdefault("ASSISTANT_SANDBOX_DIR", str(WORKDIR / "sandbox"))
 
     settings = default_settings()
+
+    # Meeting reminders ride on this job rather than a service of their own:
+    # it already wakes on the interval a reminder needs, and a reminder is
+    # arithmetic, not a job for a language model.
+    try:
+        for line in reminders.run(settings):
+            print(line)
+    except Exception as exc:
+        # A calendar problem must not swallow the approval queue. Reminders are
+        # the least important thing this job does.
+        print(f"[reminders] skipped: {exc}", flush=True)
+
     updates = notify.poll_updates(settings.telegram_offset_path)
     decisions, instructions = updates["decisions"], updates["instructions"]
 

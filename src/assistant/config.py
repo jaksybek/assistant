@@ -91,6 +91,10 @@ class Settings:
     telegram_offset_path: Path = field(
         default_factory=lambda: _data_dir() / "telegram-offset.json"
     )
+    # Which meetings have already been nudged about. Lives with the rest of the
+    # state so a job that wakes every two minutes does not send the same
+    # reminder fifteen times before the meeting starts.
+    reminded_path: Path = field(default_factory=lambda: _data_dir() / "reminded.json")
     # The ONLY directory the agent may write to. Never your whole disk.
     # Point this at a subfolder of an Obsidian vault to keep one knowledge base
     # while still confining the agent to its own corner of it.

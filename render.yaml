@@ -111,3 +111,19 @@ services:
         sync: false
       - key: GOOGLE_DRIVE_FOLDER_ID
         sync: false
+      # Calendar. Needed here as well as on the sweep, for two reasons: an
+      # approved create/reschedule/cancel runs through the same MCP servers, so
+      # without these the calendar server never starts and the approved action
+      # fails at the moment it is least expected — and meeting reminders run on
+      # this job, because it already wakes on the interval a reminder needs.
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_CALENDAR_REFRESH_TOKEN
+        sync: false
+      # How long before a meeting the nudge arrives. MUST be longer than this
+      # job's interval, or an event can start between two runs and be missed.
+      # Set to 0 to switch reminders off.
+      - key: ASSISTANT_REMINDER_MINUTES
+        value: "20"
