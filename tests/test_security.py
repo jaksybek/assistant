@@ -406,24 +406,82 @@ def calendar(monkeypatch):
     return server
 
 
+def _existing(summary="Board review", start="2026-08-20T09:00:00+05:00"):
+    return {"id": "evt1", "summary": summary, "start": {"dateTime": start}}
+
+
 def test_touching_an_event_requires_naming_it_correctly(calendar, monkeypatch):
     """What keeps a gated calendar change honest. The human approving it sees a
     title rather than an opaque id, and because the title is checked against
     Google at execution time it is verified rather than trusted — an agent
     talked by an email into cancelling the wrong meeting has to name that
     meeting correctly first."""
-    monkeypatch.setattr(
-        calendar, "_get", lambda path, **kw: {"id": "evt1", "summary": "Board review"}
-    )
+    monkeypatch.setattr(calendar, "_get", lambda path, **kw: _existing())
     monkeypatch.setattr(
         calendar, "_write", lambda *a, **kw: pytest.fail("the event was changed anyway")
     )
 
     with pytest.raises(ValueError, match="Board review"):
-        calendar.cancel_event("evt1", "Standup")
+        calendar.cancel_event("evt1", "Standup", "2026-08-20T09:00:00+05:00")
 
     with pytest.raises(ValueError, match="Board review"):
-        calendar.reschedule_event("evt1", "Standup", "2026-08-20T09:00:00+05:00", "2026-08-20T10:00:00+05:00")
+        calendar.reschedule_event(
+            "evt1", "Standup", "2026-08-20T09:00:00+05:00",
+            "2026-08-21T09:00:00+05:00", "2026-08-21T10:00:00+05:00",
+        )
+
+
+def test_the_wrong_occurrence_of_a_repeating_event_is_refused(calendar, monkeypatch):
+    """A title does not identify an event. A weekly standup has fifty
+    occurrences all called 'Standup', so a title check alone would pass on the
+    wrong one — and the approval would show a plausible name beside an opaque
+    id, with nothing to tell them apart. The start time is what the human
+    recognises."""
+    monkeypatch.setattr(
+        calendar, "_get", lambda path, **kw: _existing(summary="Standup", start="2026-08-20T09:00:00+05:00")
+    )
+    monkeypatch.setattr(
+        calendar, "_write", lambda *a, **kw: pytest.fail("the wrong occurrence was cancelled")
+    )
+
+    with pytest.raises(ValueError, match="starts at"):
+        calendar.cancel_event("evt1", "Standup", "2026-08-27T09:00:00+05:00")
+
+
+def test_the_same_instant_written_differently_still_matches(calendar, monkeypatch):
+    """Times are compared as moments, not strings, so an equivalent spelling of
+    the same instant is not treated as a different occurrence."""
+    monkeypatch.setattr(
+        calendar, "_get", lambda path, **kw: _existing(start="2026-08-20T04:00:00Z")
+    )
+    calls: list[tuple] = []
+    monkeypatch.setattr(calendar, "_write", lambda *a, **kw: calls.append((a, kw)) or {})
+
+    calendar.cancel_event("evt1", "Board review", "2026-08-20T09:00:00+05:00")
+    assert calls, "the cancellation should have gone through"
+
+
+def test_guests_are_told_when_a_meeting_moves_or_dies(calendar, monkeypatch):
+    """Google's sendUpdates defaults to notifying nobody. Left alone, the tool
+    would report a meeting cancelled while every attendee sat waiting for it —
+    lying about what it did, which is worse than failing."""
+    monkeypatch.setattr(calendar, "_get", lambda path, **kw: _existing())
+    seen: dict = {}
+
+    def _request(method, url, **kw):
+        seen["params"] = kw.get("params")
+
+        class _R:
+            status_code = 204
+            content = b""
+
+        return _R()
+
+    monkeypatch.setattr(calendar.httpx, "request", _request)
+    monkeypatch.setattr(calendar, "_access_token", lambda: "token")
+
+    calendar.cancel_event("evt1", "Board review", "2026-08-20T09:00:00+05:00")
+    assert seen["params"] == {"sendUpdates": "all"}
 
 
 @pytest.mark.parametrize("when", ["2026-08-20T15:00:00", "tomorrow at three", "2026-08-20"])

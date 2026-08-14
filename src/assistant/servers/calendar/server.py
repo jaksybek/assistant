@@ -302,32 +302,72 @@ def _require_offset(label: str, value: str) -> str:
     return text
 
 
-def _verify(event_id: str, expected_summary: str) -> dict[str, Any]:
-    """Fetch the event and refuse unless its title is the one being claimed.
+def _instant(value: str) -> datetime | None:
+    """RFC3339 to a moment in time, so two spellings of the same instant match."""
+    try:
+        return datetime.fromisoformat((value or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
-    This is what keeps a gated calendar change honest. The human approving it
-    sees a title rather than an opaque id, so they can tell which meeting is
-    being touched — and because the title is checked against Google at
-    execution time, the description is verified rather than taken on trust. An
-    agent talked by an email into cancelling the wrong meeting has to name that
-    meeting correctly first.
+
+def _verify(event_id: str, expected_summary: str, expected_start: str) -> dict[str, Any]:
+    """Fetch the event and refuse unless BOTH its title and start time match.
+
+    This is what keeps a gated calendar change honest, and the start time is
+    not decoration. A title alone does not identify an event: a weekly standup
+    has fifty occurrences all called "Standup", so an agent that picked the
+    wrong occurrence would pass a title check, and the approval would show a
+    plausible name beside an opaque id with nothing to tell them apart. The
+    start time is what the human recognises, and what distinguishes one
+    occurrence from the next.
+
+    Checking it at execution time buys a second thing for free: if the event
+    moved between the proposal and the button press — someone else rescheduled
+    it while the approval sat on a phone — the change is refused instead of
+    landing on a meeting that is no longer the one anybody agreed to.
     """
     event = _get(f"/events/{_quote(event_id)}")
+
     actual = (event.get("summary") or "").strip()
     if actual.casefold() != (expected_summary or "").strip().casefold():
         raise ValueError(
             f"Refusing: event {event_id} is {actual!r}, not {expected_summary!r}. "
             "Read the event again and re-propose with its real title."
         )
+
+    start = event.get("start") or {}
+    current = start.get("dateTime") or start.get("date") or ""
+    claimed, real = _instant(expected_start), _instant(current)
+    matches = claimed == real if (claimed and real) else (
+        (expected_start or "").strip() == current.strip()
+    )
+    if not matches:
+        raise ValueError(
+            f"Refusing: {actual!r} starts at {current}, not {expected_start!r}. "
+            "Either this is a different occurrence of a repeating event, or it has "
+            "been moved since. Read it again and re-propose."
+        )
     return event
 
 
-def _write(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _write(
+    method: str, path: str, body: dict[str, Any] | None = None, notify: bool = True
+) -> dict[str, Any]:
+    """Change something, and by default tell the guests.
+
+    `sendUpdates` defaults to "false" at Google's end, which quietly means "do
+    not notify anyone". Left alone, this server would report that a meeting had
+    been moved or cancelled while every attendee sat waiting for it — the tool
+    lying about what it did, which is worse than failing. Reschedules and
+    cancellations therefore send; creating an event with no guests has nobody
+    to tell, so it does not need to.
+    """
     _, _, _, calendar_id = _config()
     response = httpx.request(
         method,
         f"{API}/calendars/{_quote(calendar_id)}{path}",
         headers={"Authorization": f"Bearer {_access_token()}"},
+        params={"sendUpdates": "all"} if notify else None,
         json=body,
         timeout=30,
     )
@@ -349,16 +389,20 @@ def create_event(summary: str, start: str, end: str, description: str = "") -> s
     }
     if description.strip():
         body["description"] = description.strip()
-    event = _write("POST", "/events", body)
+    # A new event has no guests to notify — there is nobody on it yet.
+    event = _write("POST", "/events", body, notify=False)
     return f"Created '{event.get('summary', summary)}' ({_when(event)}), id={event.get('id', '?')}."
 
 
 @mcp.tool()
-def reschedule_event(event_id: str, expected_summary: str, start: str, end: str) -> str:
-    """Move an event to a new time. `expected_summary` must be the event's
-    current title — the call is refused if it does not match, so the human
-    approving it can see which meeting this is. Always requires approval."""
-    _verify(event_id, expected_summary)
+def reschedule_event(
+    event_id: str, expected_summary: str, expected_start: str, start: str, end: str
+) -> str:
+    """Move an event to a new time. `expected_summary` and `expected_start` must
+    be the event's CURRENT title and start — both are checked, and the call is
+    refused if either differs, so a repeating event cannot be moved on the wrong
+    occurrence. Guests are notified. Always requires approval."""
+    _verify(event_id, expected_summary, expected_start)
     event = _write(
         "PATCH",
         f"/events/{_quote(event_id)}",
@@ -367,17 +411,18 @@ def reschedule_event(event_id: str, expected_summary: str, start: str, end: str)
             "end": {"dateTime": _require_offset("end", end)},
         },
     )
-    return f"Moved '{event.get('summary', expected_summary)}' to {_when(event)}."
+    return f"Moved '{event.get('summary', expected_summary)}' to {_when(event)}, guests notified."
 
 
 @mcp.tool()
-def cancel_event(event_id: str, expected_summary: str) -> str:
-    """Cancel an event. `expected_summary` must be the event's current title —
-    the call is refused if it does not match. Always requires approval, and
-    cannot be undone from here."""
-    _verify(event_id, expected_summary)
+def cancel_event(event_id: str, expected_summary: str, expected_start: str) -> str:
+    """Cancel an event. `expected_summary` and `expected_start` must be the
+    event's CURRENT title and start — both are checked, so a repeating event
+    cannot be cancelled on the wrong occurrence. Guests are notified. Always
+    requires approval, and cannot be undone from here."""
+    _verify(event_id, expected_summary, expected_start)
     _write("DELETE", f"/events/{_quote(event_id)}")
-    return f"Cancelled '{expected_summary}'."
+    return f"Cancelled '{expected_summary}' ({expected_start}), guests notified."
 
 
 def main() -> None:
