@@ -22,6 +22,18 @@ from __future__ import annotations
 RETRYABLE = (408, 429)
 
 
+def retryable(status: int) -> bool:
+    """Will this status plausibly be different on the next run?
+
+    One function rather than an inline `>= 500` at each call site, because the
+    rule was already stated twice and the two copies already disagreed: the
+    Drive folder check treated 5xx as transient and let 429 fall through to a
+    fatal error, so a rate limit there still cost the briefing after the token
+    exchange had been fixed. A rule about retrying belongs in one place.
+    """
+    return status in RETRYABLE or status >= 500
+
+
 class TokenRefused(RuntimeError):
     """A non-200 from a Google token endpoint, with the status kept."""
 
@@ -31,4 +43,4 @@ class TokenRefused(RuntimeError):
 
     @property
     def transient(self) -> bool:
-        return self.status in RETRYABLE or self.status >= 500
+        return retryable(self.status)

@@ -255,7 +255,7 @@ def _check_drive() -> None:
 
     import httpx
 
-    from .oauth import TokenRefused
+    from .oauth import TokenRefused, retryable
     from .servers.drive.server import _access_token, _service_account
 
     try:
@@ -309,7 +309,11 @@ def _check_drive() -> None:
             "then no recording can be read, however well everything else works."
         )
 
-    if response.status_code >= 500:
+    # retryable(), not an inline `>= 500`: this branch used to miss 429
+    # entirely, so a rate limit on the folder fetch reached the fatal error
+    # below and killed the briefing — the same bug as the token exchange, one
+    # call further on.
+    if retryable(response.status_code):
         print(
             f"[preflight] Drive folder        Google returned {response.status_code}"
             " — continuing",

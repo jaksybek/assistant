@@ -1553,3 +1553,66 @@ def test_both_token_exchanges_raise_the_type_that_carries_the_status():
     for module in (calendar, drive):
         body = inspect.getsource(module._access_token)
         assert "TokenRefused(" in body, f"{module.__name__} lost the status on refusal"
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 503])
+def test_a_throttled_drive_folder_check_does_not_abort_the_sweep(monkeypatch, capsys, status):
+    """The instance missed on the first pass. The token exchange was fixed, but
+    the folder fetch one call later still hard-coded `>= 500`, so a 429 there
+    fell through to the fatal branch and killed the briefing anyway."""
+    import httpx
+
+    from assistant import cron
+    from assistant.servers.drive import server
+
+    monkeypatch.setenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "folder")
+    monkeypatch.setattr(server, "_service_account", lambda: {"client_email": "a@b.c"})
+    monkeypatch.setattr(server, "_access_token", lambda: "token")
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda *a, **kw: httpx.Response(status, text="slow down", request=httpx.Request("GET", "https://x")),
+    )
+
+    cron._check_drive()
+    assert str(status) in capsys.readouterr().out
+
+
+def test_an_unshared_drive_folder_is_still_fatal(monkeypatch):
+    """Guards the other direction: the share is the security boundary and the
+    likeliest setup mistake, so 403/404 must never become survivable."""
+    import httpx
+
+    from assistant import cron
+    from assistant.servers.drive import server
+
+    monkeypatch.setenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "folder")
+    monkeypatch.setattr(server, "_service_account", lambda: {"client_email": "a@b.c"})
+    monkeypatch.setattr(server, "_access_token", lambda: "token")
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda *a, **kw: httpx.Response(404, text="not found", request=httpx.Request("GET", "https://x")),
+    )
+
+    with pytest.raises(RuntimeError, match="not visible"):
+        cron._check_drive()
+
+
+def test_one_rule_decides_what_is_retryable():
+    """Both call sites go through the same predicate. Two hand-written copies is
+    how 429 came to be transient in one place and fatal in the other."""
+    import inspect
+
+    from assistant import cron
+    from assistant.oauth import retryable
+
+    assert retryable(429) and retryable(503) and retryable(408)
+    assert not retryable(401) and not retryable(400) and not retryable(404)
+    source = inspect.getsource(cron._check_drive)
+    assert "retryable(response.status_code)" in source
+    # The literal comparison, not the words: the comment above the call names
+    # `>= 500` on purpose, to record what the branch used to get wrong.
+    assert "status_code >= 500" not in source, (
+        "the retry rule has been inlined again; it belongs in oauth.retryable"
+    )
