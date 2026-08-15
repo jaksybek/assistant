@@ -1453,3 +1453,103 @@ def test_google_being_unreachable_does_not_cost_the_briefing(monkeypatch, capsys
 
     cron._check_calendar()
     assert "UNREACHABLE" in capsys.readouterr().out
+
+
+# --- Transient vs refused: a rate limit must not cost the briefing -----------
+#
+# httpx.post RETURNS for 429 and 503 rather than raising, so the token-exchange
+# code turned "Google is having a bad five minutes" into the same exception as
+# "your client secret is wrong". The preflight then called it rejected
+# credentials and aborted — losing the morning briefing to something that would
+# have cleared by itself, and contradicting its own stated policy.
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_google_having_a_bad_five_minutes_is_retryable(status):
+    from assistant.oauth import TokenRefused
+
+    assert TokenRefused(status, "boom").transient is True
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_a_statement_about_the_credential_is_not_retryable(status):
+    """400 invalid_grant and 401 invalid_client will be just as true next run,
+    so they must stop the job rather than be slept off."""
+    from assistant.oauth import TokenRefused
+
+    assert TokenRefused(status, "boom").transient is False
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_throttled_calendar_does_not_abort_the_sweep(monkeypatch, capsys, status):
+    from assistant import cron
+    from assistant.oauth import TokenRefused
+    from assistant.servers.calendar import server
+
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "refresh")
+
+    def throttled() -> str:
+        raise TokenRefused(status, f"Could not refresh the calendar token ({status})")
+
+    monkeypatch.setattr(server, "_access_token", throttled)
+
+    cron._check_calendar()
+    assert str(status) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_throttled_drive_does_not_abort_the_sweep(monkeypatch, capsys, status):
+    """Same trap, same fix, on the other integration — it was there too."""
+    from assistant import cron
+    from assistant.oauth import TokenRefused
+    from assistant.servers.drive import server
+
+    monkeypatch.setenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "{}")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "folder")
+
+    monkeypatch.setattr(server, "_service_account", lambda: {"client_email": "a@b.c"})
+
+    def throttled() -> str:
+        raise TokenRefused(status, f"Could not obtain a Drive token ({status})")
+
+    monkeypatch.setattr(server, "_access_token", throttled)
+
+    cron._check_drive()
+    assert str(status) in capsys.readouterr().out
+
+
+def test_a_genuinely_wrong_credential_still_stops_the_run(monkeypatch):
+    """The other half. Making transient failures survivable must not make a dead
+    credential survivable too — that would restore the silent outage this whole
+    preflight exists to end."""
+    from assistant import cron
+    from assistant.oauth import TokenRefused
+    from assistant.servers.calendar import server
+
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "refresh")
+
+    def refused() -> str:
+        raise TokenRefused(401, '{"error": "invalid_client"}')
+
+    monkeypatch.setattr(server, "_access_token", refused)
+
+    with pytest.raises(RuntimeError, match="Calendar credentials rejected"):
+        cron._check_calendar()
+
+
+def test_both_token_exchanges_raise_the_type_that_carries_the_status():
+    """Guards the actual mechanism. If either server goes back to a bare
+    RuntimeError the preflight silently loses the ability to tell a rate limit
+    from a wrong key, and every test above still passes."""
+    import inspect
+
+    from assistant.servers.calendar import server as calendar
+    from assistant.servers.drive import server as drive
+
+    for module in (calendar, drive):
+        body = inspect.getsource(module._access_token)
+        assert "TokenRefused(" in body, f"{module.__name__} lost the status on refusal"

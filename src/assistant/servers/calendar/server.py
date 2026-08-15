@@ -61,6 +61,8 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import MCPServer
 
+from ...oauth import TokenRefused
+
 mcp = MCPServer("calendar")
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -224,7 +226,9 @@ def _access_token() -> str:
         timeout=30,
     )
     if response.status_code != 200:
-        raise RuntimeError(_refresh_failure(response.status_code, response.text))
+        raise TokenRefused(
+            response.status_code, _refresh_failure(response.status_code, response.text)
+        )
     payload = response.json()
     _token["value"] = payload["access_token"]
     _token["expires_at"] = now + timedelta(seconds=int(payload.get("expires_in", 3600)) - 60)

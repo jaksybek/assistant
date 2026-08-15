@@ -159,6 +159,12 @@ def _check_calendar() -> None:
     * A refused credential is fatal — it will not fix itself, and the failure
       mail is how it gets noticed. A network blip is not: mail is the point of
       the sweep, and the calendar is not worth losing a morning briefing over.
+
+      That last line is easy to write and easy to get wrong, and the first cut
+      of this function did: `httpx.post` RETURNS for 429 and 503 instead of
+      raising, so a throttled Google arrived as the same exception as a wrong
+      client secret, and the blip aborted the sweep after all. Hence
+      TokenRefused carrying the status — see oauth.py.
     """
     names = ("GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET",
              "GOOGLE_CALENDAR_REFRESH_TOKEN")
@@ -177,18 +183,29 @@ def _check_calendar() -> None:
 
     import httpx
 
+    from .oauth import TokenRefused
     from .servers.calendar import server as calendar
 
     try:
         calendar._access_token()
     except httpx.HTTPError as exc:
-        # Transient: Google unreachable. Say so and let the sweep run.
+        # Transport-level: Google unreachable. Say so and let the sweep run.
         print(f"[preflight] Calendar token      UNREACHABLE ({exc}) — continuing", flush=True)
         return
+    except TokenRefused as exc:
+        # A REPLY from Google, which httpx does not raise on — 429 and 503 arrive
+        # here looking exactly like a wrong secret. Only the status tells them
+        # apart, and getting it wrong means a rate limit costs the briefing.
+        if exc.transient:
+            print(
+                f"[preflight] Calendar token      Google returned {exc.status} — continuing",
+                flush=True,
+            )
+            return
+        raise RuntimeError(f"Calendar credentials rejected. {exc}") from None
     except Exception as exc:
-        # Refused. _refresh_failure has already worked out which half of the
-        # credentials is wrong and what to do about it; pass that through rather
-        # than restating it worse.
+        # Anything else — a malformed key, a missing field in the reply. Will not
+        # fix itself, so it stops the run.
         raise RuntimeError(f"Calendar credentials rejected. {exc}") from None
 
     print("[preflight] Calendar token      ok", flush=True)
@@ -238,11 +255,29 @@ def _check_drive() -> None:
 
     import httpx
 
+    from .oauth import TokenRefused
     from .servers.drive.server import _access_token, _service_account
 
     try:
         address = _service_account().get("client_email", "the service account")
         token = _access_token()
+    except httpx.HTTPError as exc:
+        print(f"[preflight] Drive token         UNREACHABLE ({exc}) — continuing", flush=True)
+        return
+    except TokenRefused as exc:
+        # Same trap as the calendar: httpx returns a 429 or a 503 rather than
+        # raising, so without the status a bad five minutes at Google is
+        # indistinguishable from a deleted key — and kills the briefing.
+        if exc.transient:
+            print(
+                f"[preflight] Drive token         Google returned {exc.status} — continuing",
+                flush=True,
+            )
+            return
+        raise RuntimeError(
+            f"Drive credentials rejected: {exc}. The service-account key is wrong, "
+            "malformed, or has been deleted in the Google Cloud console."
+        ) from None
     except Exception as exc:
         raise RuntimeError(
             f"Drive credentials rejected: {exc}. The service-account key is wrong, "
