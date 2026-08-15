@@ -134,6 +134,64 @@ def _preflight() -> None:
 
     _check_logins()
     _check_drive()
+    _check_calendar()
+
+
+def _check_calendar() -> None:
+    """Prove the calendar credentials work before the sweep starts.
+
+    This exists because they stopped working and nobody found out for a day.
+    Google began answering `401 invalid_client`; the sweep carried on, the
+    briefing was produced and looked complete, and the only symptom was an
+    absence — no schedule at the top, no meeting reminders, and an approved
+    calendar change that would have failed at the moment it was least expected.
+    Exactly the failure `_check_drive` was written for, on the other integration.
+
+    The rules are the same, for the same reasons:
+
+    * Not configured is not broken. The server registry starts the calendar only
+      when all three credentials are present, so their absence is a choice.
+
+    * Half-configured IS broken, and silently: two of three means no calendar
+      server, no schedule section, and a briefing that reads as complete while
+      missing the part it was meant to open with.
+
+    * A refused credential is fatal — it will not fix itself, and the failure
+      mail is how it gets noticed. A network blip is not: mail is the point of
+      the sweep, and the calendar is not worth losing a morning briefing over.
+    """
+    names = ("GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET",
+             "GOOGLE_CALENDAR_REFRESH_TOKEN")
+    present = [name for name in names if (os.environ.get(name) or "").strip()]
+
+    if not present:
+        return
+
+    if len(present) < len(names):
+        missing = ", ".join(name for name in names if name not in present)
+        raise RuntimeError(
+            f"Calendar is half-configured: {missing} not set. The calendar server "
+            "will not start, so the briefing loses its schedule and no approved "
+            "calendar change can run. Set them, or clear all three."
+        )
+
+    import httpx
+
+    from .servers.calendar import server as calendar
+
+    try:
+        calendar._access_token()
+    except httpx.HTTPError as exc:
+        # Transient: Google unreachable. Say so and let the sweep run.
+        print(f"[preflight] Calendar token      UNREACHABLE ({exc}) — continuing", flush=True)
+        return
+    except Exception as exc:
+        # Refused. _refresh_failure has already worked out which half of the
+        # credentials is wrong and what to do about it; pass that through rather
+        # than restating it worse.
+        raise RuntimeError(f"Calendar credentials rejected. {exc}") from None
+
+    print("[preflight] Calendar token      ok", flush=True)
 
 
 def _check_drive() -> None:

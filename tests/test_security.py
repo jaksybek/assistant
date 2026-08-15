@@ -1314,3 +1314,142 @@ def test_search_matches_note_titles(notes):
     notes.save("Ideas/procrastination and productivity", "Всё про откладывание дел.")
     result = notes.search("procrastination")
     assert "Ideas/procrastination and productivity" in result
+
+
+# --- Calendar credentials: the 401 invalid_client outage, 2026-08-15 ---------
+#
+# The integration went dark for a day. The sweep still succeeded, the briefing
+# still arrived, and the only sign was an absence: no schedule, no meeting
+# reminders, no way for an approved calendar change to run. These four tests
+# cover the three things that made a one-character problem cost a day.
+
+
+def test_pasted_calendar_credentials_survive_a_stray_newline(monkeypatch):
+    """A trailing newline off a copied line is invisible in a dashboard field,
+    and Google rejects the pair as `invalid_client` — an error naming the CLIENT,
+    which sends you to rebuild an OAuth client that was never broken."""
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "  id-123\n")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret-456\t")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "\nrefresh-789 ")
+    monkeypatch.setenv("GOOGLE_CALENDAR_ID", " team@example.com\n")
+    from assistant.servers.calendar import server
+
+    assert server._config() == ("id-123", "secret-456", "refresh-789", "team@example.com")
+
+
+def test_a_space_inside_a_credential_is_left_alone(monkeypatch):
+    """The other half of the rule. A space in the MIDDLE means a different value,
+    not a mis-paste; deleting it would turn a loud failure into a mysterious one."""
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id 123")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "s")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "r")
+    monkeypatch.delenv("GOOGLE_CALENDAR_ID", raising=False)
+    from assistant.servers.calendar import server
+
+    assert server._config()[0] == "id 123"
+
+
+def test_the_two_oauth_errors_point_at_different_halves():
+    """The whole value of the diagnostic. `invalid_client` and `invalid_grant`
+    differ by one word and blame opposite halves of the credential set, so
+    without this the wrong half gets rebuilt first — which is what happened."""
+    from assistant.servers.calendar.server import _refresh_failure
+
+    client = _refresh_failure(401, '{"error": "invalid_client"}')
+    assert "CLIENT_ID" in client and "CLIENT_SECRET" in client
+    # Must say plainly that re-running the setup is not the fix here.
+    assert "refresh token is NOT the problem" in client
+
+    grant = _refresh_failure(400, '{"error": "invalid_grant"}')
+    assert "REFRESH TOKEN is dead" in grant
+    assert "assistant-calendar-setup" in grant
+    # The seven-day Testing-status expiry is the recurring cause; naming it is
+    # what stops this being rediscovered every week.
+    assert "Testing" in grant
+
+    # A body that is not JSON must still surface, not crash.
+    assert "502" in _refresh_failure(502, "<html>Bad Gateway</html>")
+
+
+def test_the_setup_script_prints_all_three_values_that_move_together():
+    """Printing only the refresh token is what caused the outage: a re-consent
+    that creates a new OAuth client changes all three, but only one was ever on
+    screen, so only one got carried onwards."""
+    import inspect
+
+    from assistant import calendar_setup
+
+    body = inspect.getsource(calendar_setup.main)
+    for name in ("GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET",
+                 "GOOGLE_CALENDAR_REFRESH_TOKEN"):
+        assert f"{name}=" in body, f"{name} is not printed for the operator to copy"
+
+
+def test_half_configured_calendar_is_fatal_rather_than_quiet(monkeypatch):
+    """Two of three credentials means the server never registers: no schedule in
+    the briefing and no approved calendar change can run, with nothing saying so.
+    Same rule as the Drive half-configuration check."""
+    import pytest
+
+    from assistant import cron
+
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret")
+    monkeypatch.delenv("GOOGLE_CALENDAR_REFRESH_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="half-configured"):
+        cron._check_calendar()
+
+
+def test_an_unconfigured_calendar_is_not_an_error(monkeypatch):
+    """Absence is a choice, not a fault — the same rule the server registry
+    follows. A sweep on a machine with no calendar must still run."""
+    from assistant import cron
+
+    for name in ("GOOGLE_CALENDAR_CLIENT_ID", "GOOGLE_CALENDAR_CLIENT_SECRET",
+                 "GOOGLE_CALENDAR_REFRESH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    cron._check_calendar()
+
+
+def test_a_refused_calendar_credential_stops_the_sweep(monkeypatch):
+    """The point of the preflight. Before this, a dead calendar produced a
+    briefing that looked complete and was missing the part it opens with."""
+    import pytest
+
+    from assistant import cron
+    from assistant.servers.calendar import server
+
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "refresh")
+
+    def refuse() -> str:
+        raise RuntimeError(server._refresh_failure(401, '{"error": "invalid_client"}'))
+
+    monkeypatch.setattr(server, "_access_token", refuse)
+
+    with pytest.raises(RuntimeError, match="Calendar credentials rejected"):
+        cron._check_calendar()
+
+
+def test_google_being_unreachable_does_not_cost_the_briefing(monkeypatch, capsys):
+    """Transient failures must not be fatal: mail is the point of the sweep, and
+    the calendar is not worth losing a morning briefing over."""
+    import httpx
+
+    from assistant import cron
+    from assistant.servers.calendar import server
+
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_ID", "id")
+    monkeypatch.setenv("GOOGLE_CALENDAR_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GOOGLE_CALENDAR_REFRESH_TOKEN", "refresh")
+
+    def unreachable() -> str:
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(server, "_access_token", unreachable)
+
+    cron._check_calendar()
+    assert "UNREACHABLE" in capsys.readouterr().out

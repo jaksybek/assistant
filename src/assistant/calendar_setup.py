@@ -173,11 +173,26 @@ def main() -> None:
         )
         sys.exit(1)
 
-    print("\nAdd this to ~/assistant/.env:\n")
+    # All THREE, not just the new one. Printing the refresh token alone is what
+    # cost a day: a re-consent that also created a new OAuth client changes the
+    # id and secret too, but only the token was ever on screen, so only the
+    # token got carried onwards — and Google rejected the mismatched pair as
+    # `invalid_client`, an error that points at the client rather than at the
+    # paste. They travel together or not at all.
+    print("\nSet all THREE of these, together, everywhere the agent runs:\n")
+    print(f"GOOGLE_CALENDAR_CLIENT_ID={client_id}")
+    print(f"GOOGLE_CALENDAR_CLIENT_SECRET={client_secret}")
     print(f"GOOGLE_CALENDAR_REFRESH_TOKEN={refresh_token}")
     print(
+        "\nEverywhere means ~/assistant/.env AND both Render cron services "
+        "(assistant-nightly and assistant-approvals). A fresh refresh token "
+        "paired with a stale client id fails as 401 invalid_client, which reads "
+        "like a deleted OAuth client and sends you looking in the wrong place."
+    )
+    print(
         "\nOptionally set GOOGLE_CALENDAR_ID to read a calendar other than "
-        "your default one (it accepts the calendar's address)."
+        "your default one (it accepts the calendar's address). If you set it, "
+        "set it on both services, or they read different calendars."
     )
 
 
