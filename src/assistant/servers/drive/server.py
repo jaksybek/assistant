@@ -65,6 +65,8 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import MCPServer
 
+from ...oauth import TokenRefused
+
 mcp = MCPServer("drive")
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -196,8 +198,11 @@ def _access_token() -> str:
         timeout=30,
     )
     if response.status_code != 200:
-        raise RuntimeError(
-            f"Could not obtain a Drive token ({response.status_code}): {response.text[:300]}"
+        # TokenRefused, not RuntimeError: the preflight has to tell a wrong key
+        # from a rate limit, and only the status says which.
+        raise TokenRefused(
+            response.status_code,
+            f"Could not obtain a Drive token ({response.status_code}): {response.text[:300]}",
         )
     payload = response.json()
     _token["value"] = payload["access_token"]

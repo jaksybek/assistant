@@ -61,6 +61,8 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import MCPServer
 
+from ...oauth import TokenRefused
+
 mcp = MCPServer("calendar")
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -109,10 +111,20 @@ def _quote(value: str) -> str:
 
 
 def _config() -> tuple[str, str, str, str]:
-    client_id = os.environ.get("GOOGLE_CALENDAR_CLIENT_ID")
-    client_secret = os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET")
-    refresh_token = os.environ.get("GOOGLE_CALENDAR_REFRESH_TOKEN")
-    calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
+    # .strip() because these are pasted by hand into a dashboard field, and a
+    # newline off the end of a copied line is invisible in the form holding it.
+    # Google rejects the pair as `invalid_client`, which reads like a DELETED
+    # OAuth client rather than a stray character — so the obvious next move is
+    # to recreate a client that was never broken. The mail server learnt the
+    # same lesson (see `_clean` there).
+    #
+    # Deliberately .strip() and not "remove every space": a space in the MIDDLE
+    # of an OAuth value means a different value, not a mis-paste, and deleting
+    # it silently would turn a loud failure into a mysterious one.
+    client_id = (os.environ.get("GOOGLE_CALENDAR_CLIENT_ID") or "").strip()
+    client_secret = (os.environ.get("GOOGLE_CALENDAR_CLIENT_SECRET") or "").strip()
+    refresh_token = (os.environ.get("GOOGLE_CALENDAR_REFRESH_TOKEN") or "").strip()
+    calendar_id = (os.environ.get("GOOGLE_CALENDAR_ID") or "primary").strip()
     if not (client_id and client_secret and refresh_token):
         raise RuntimeError(
             "Calendar is not configured. Set GOOGLE_CALENDAR_CLIENT_ID, "
@@ -120,6 +132,76 @@ def _config() -> tuple[str, str, str, str]:
             "in .env. Run `assistant-calendar-setup` to obtain them."
         )
     return client_id, client_secret, refresh_token, calendar_id
+
+
+def _refresh_failure(status: int, body: str) -> str:
+    """Turn Google's two-word OAuth error into the thing to actually go and do.
+
+    Written after a live 401 `invalid_client` sat unexplained for a day while
+    meeting reminders and every approved calendar write silently did nothing.
+    The raw body was already surfaced, and that was not enough: `invalid_client`
+    and `invalid_grant` differ by one word and point at opposite halves of the
+    credential set, so the wrong half gets rebuilt first.
+
+    The distinction is the whole value of this function:
+
+    * `invalid_client` — Google does not recognise the CLIENT_ID/CLIENT_SECRET
+      pair. The refresh token is not the problem and re-running the setup will
+      not help by itself. In this project the likeliest cause is a partial
+      update: PR #17 widened the scope from `calendar.readonly` to
+      `calendar.events`, which forces a re-consent, and if a fresh OAuth client
+      was created for it then all THREE values changed — but the setup script
+      only ever printed the refresh token, so that is the only one that tends to
+      get pasted onwards. New token, old client id, and Google refuses the pair.
+
+    * `invalid_grant` — the pair is fine and the REFRESH TOKEN is dead: revoked
+      at myaccount.google.com/permissions, or expired because the OAuth consent
+      screen is still in Testing status, where refresh tokens last seven days.
+      That one is fixed by re-running the setup, and permanently by publishing
+      the app.
+    """
+    error = ""
+    try:
+        error = str(response_error(body))
+    except Exception:
+        error = ""
+
+    hint = ""
+    if error == "invalid_client":
+        hint = (
+            "\n\nGoogle does not recognise the CLIENT_ID/CLIENT_SECRET pair — the "
+            "refresh token is NOT the problem here.\n"
+            "  * If the OAuth client was recreated (a re-consent for the "
+            "calendar.events scope is the usual reason), then all three values "
+            "changed together. Copy CLIENT_ID and CLIENT_SECRET onwards too, "
+            "everywhere they are set — both Render services as well as .env.\n"
+            "  * Otherwise check the client still exists in the Google Cloud "
+            "console, in the same project, and that neither value picked up a "
+            "stray character when it was pasted."
+        )
+    elif error == "invalid_grant":
+        hint = (
+            "\n\nThe client id and secret are fine; the REFRESH TOKEN is dead. "
+            "Either it was revoked at myaccount.google.com/permissions, or the "
+            "OAuth consent screen is still in Testing status, where Google "
+            "expires refresh tokens after seven days. Re-run "
+            "`assistant-calendar-setup`, and publish the app so it stops "
+            "happening every week."
+        )
+
+    return (
+        f"Could not refresh the calendar token ({status}): {body[:300]}{hint}"
+    )
+
+
+def response_error(body: str) -> str | None:
+    """The `error` field out of an OAuth error body, or None if it is not JSON."""
+    import json
+
+    try:
+        return json.loads(body).get("error")
+    except Exception:
+        return None
 
 
 def _access_token() -> str:
@@ -144,12 +226,8 @@ def _access_token() -> str:
         timeout=30,
     )
     if response.status_code != 200:
-        # Google's error body names the cause (invalid_grant on a revoked or
-        # expired token, invalid_client on a bad secret). Surface it: the
-        # alternative is an opaque failure that looks like a broken integration.
-        raise RuntimeError(
-            f"Could not refresh the calendar token ({response.status_code}): "
-            f"{response.text[:300]}"
+        raise TokenRefused(
+            response.status_code, _refresh_failure(response.status_code, response.text)
         )
     payload = response.json()
     _token["value"] = payload["access_token"]
