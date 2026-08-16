@@ -75,37 +75,67 @@ Deleting always needs their approval, by design; never work around that.
 Be direct. Say what you did, what you could not do, and what needs the user."""
 
 
-# Environment variables that carry a credential. A subprocess inherits the
-# whole environment unless you stop it, so every server was being handed every
-# secret the agent owns — the notes server, which only ever touches markdown
-# files, received the Anthropic key, the mail password and the state-repo token.
+# What a server is allowed to see. This is an ALLOWLIST, and the direction
+# matters more than the contents.
 #
-# Nothing exploited that. It is simply a larger blast radius than the design
-# claims: "least privilege per server, own credentials" is not true if they all
-# inherit the same environment. One buggy or malicious dependency inside any
-# server is enough, and the servers are exactly where third-party code runs.
+# A subprocess inherits the whole environment unless you stop it, so every
+# server was once handed every secret the agent owns — the notes server, which
+# only ever touches markdown files, held the Anthropic key, the mail password
+# and the state-repo token. That was fixed by naming the secrets and stripping
+# them, which worked until the next credential arrived: adding the calendar
+# meant remembering to add GOOGLE_ to that list, and forgetting would have
+# handed the notes server a token to the user's calendar, silently, with
+# nothing failing.
 #
-# Matched by prefix rather than exact name so a new MAIL_* or TELEGRAM_* setting
-# is covered the day it is added, instead of the day someone remembers to list
-# it here.
+# A denylist is only as good as the last person's memory. Inverted, the default
+# for an unrecognised variable flips from "shared with everything" to "shared
+# with nothing", so DEEPSEEK_API_KEY or DIGITALOCEAN_TOKEN is contained on the
+# day it is introduced rather than the day someone notices.
 #
-# This list is a denylist, and that is its weakness: a credential whose name
-# does not match any prefix here is handed to every server by default. Adding
-# the calendar meant adding GOOGLE_ below, and forgetting would have given the
-# notes server a token to the user's calendar. The safer shape is the inverse —
-# strip everything except a small runtime allowlist (PATH, HOME, LANG,
-# ASSISTANT_SANDBOX_DIR) plus each server's declared prefixes — and it is worth
-# doing before the next credential arrives rather than after.
-SECRET_PREFIXES = (
-    "ANTHROPIC_",
-    "MAIL_",
-    "TELEGRAM_",
-    "ASSISTANT_STATE_",
-    "GITHUB_",
-    "GH_",
-    "OPENAI_",
-    "GOOGLE_",
+# The cost is that a server needing something new fails loudly and gets a line
+# here. That is the right way round: a missing variable is a stack trace, a
+# leaked one is silent.
+RUNTIME_ENV = frozenset(
+    {
+        # Finding and running the interpreter.
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "PWD",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        # Text handling. Without these, a non-ASCII note or subject line can
+        # fail deep inside a codec with an error that names nothing useful.
+        "LANG",
+        "TZ",
+        # TLS and proxies, for the servers that make outbound requests.
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        # The sandbox the notes server operates in, and the data dir it falls
+        # back to. Named exactly, NOT as an ASSISTANT_ prefix — that would let
+        # ASSISTANT_STATE_TOKEN through, which is precisely the kind of
+        # near-miss this rewrite exists to prevent.
+        "ASSISTANT_SANDBOX_DIR",
+        "ASSISTANT_DATA_DIR",
+    }
 )
+
+# Prefixes every server may see: locale variants and interpreter settings, both
+# of which are open-ended sets that carry no credentials.
+RUNTIME_ENV_PREFIXES = ("LC_", "PYTHON")
 
 
 def _namespaced(server: str, tool: str) -> str:
@@ -113,12 +143,13 @@ def _namespaced(server: str, tool: str) -> str:
 
 
 def _server_env(server: Any, base: dict[str, str]) -> dict[str, str]:
-    """The environment one server is launched with: everything ambient, every
-    secret removed, then only the prefixes that server declared."""
+    """The environment one server is launched with: the runtime essentials,
+    plus only the prefixes that server declared. Everything else is dropped,
+    whether or not anyone recognised it as a secret."""
     scoped = {
         key: value
         for key, value in base.items()
-        if not key.startswith(SECRET_PREFIXES)
+        if key in RUNTIME_ENV or key.startswith(RUNTIME_ENV_PREFIXES)
     }
     for key, value in base.items():
         if server.env_prefixes and key.startswith(tuple(server.env_prefixes)):
