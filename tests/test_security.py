@@ -10,6 +10,7 @@ Nothing here touches the network or a real mailbox.
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -1616,3 +1617,146 @@ def test_one_rule_decides_what_is_retryable():
     assert "status_code >= 500" not in source, (
         "the retry rule has been inlined again; it belongs in oauth.retryable"
     )
+
+
+# -- prompt caching ---------------------------------------------------------
+#
+# The loop re-sends the whole prompt on every iteration: tools, system, and a
+# conversation that grows with each tool call. Cache reads cost about a tenth
+# of input, so the markers below are the difference between paying for that
+# history once and paying for it ten times in a single sweep. They also fail
+# silently — a missed breakpoint raises nothing, it just costs money — which is
+# why these tests check placement rather than trusting it.
+
+
+def test_the_static_prefix_carries_one_breakpoint():
+    """Tools render before system, so a single marker on the system block caches
+    both. Two markers here would spend one of the four available slots to cache
+    exactly the same bytes."""
+    from assistant.agent import SYSTEM, SYSTEM_BLOCKS
+
+    assert len(SYSTEM_BLOCKS) == 1
+    assert SYSTEM_BLOCKS[0]["text"] == SYSTEM
+    assert SYSTEM_BLOCKS[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_nothing_is_interpolated_into_the_system_prompt():
+    """The prefix must be byte-identical across runs. A date or a mode spliced
+    in here sits ahead of everything and invalidates the whole cache on every
+    request — the failure would look like caching that simply never works."""
+    from assistant.agent import SYSTEM
+
+    for marker in ("{", "}", "%s", "format("):
+        assert marker not in SYSTEM, f"the system prompt is being templated on {marker!r}"
+
+
+def test_breakpoints_land_on_the_last_two_user_turns():
+    """One marker on the newest turn is what makes the next call read the history
+    back. The second is the anchor: a breakpoint only searches back twenty
+    content blocks, and one iteration firing several tools can bury the previous
+    marker deeper than that."""
+    from assistant.agent import _with_breakpoints
+
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "1", "content": "a"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "2", "content": "b"}]},
+    ]
+    marked = _with_breakpoints(history)
+
+    def marks(message):
+        content = message["content"]
+        return sum("cache_control" in b for b in content if isinstance(b, dict))
+
+    assert marks(marked[0]) == 0, "the oldest turn should have rolled out of the window"
+    assert marks(marked[2]) == 1
+    assert marks(marked[4]) == 1
+    assert all(marks(m) == 0 for m in marked if m["role"] == "assistant")
+    total = sum(marks(m) for m in marked)
+    assert total <= 3, "four breakpoints is the hard limit and system already uses one"
+
+
+def test_marking_never_touches_the_stored_history():
+    """Breakpoints roll forward every turn. If they were written into
+    `self.messages` they would accumulate, and the fifth request of a sweep
+    would be rejected for exceeding four."""
+    from assistant.agent import _with_breakpoints
+
+    history = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
+    _with_breakpoints(history)
+
+    assert "cache_control" not in history[0]["content"][0]
+
+
+def test_a_plain_string_turn_is_promoted_so_it_can_be_marked():
+    """The first turn of every conversation is a bare string, and a string has
+    nowhere to hang a marker. Without this the opening request of each sweep —
+    the one that writes the cache the rest of the run reads — would miss."""
+    from assistant.agent import _with_breakpoints
+
+    marked = _with_breakpoints([{"role": "user", "content": "just text"}])
+    block = marked[0]["content"][0]
+
+    assert block == {
+        "type": "text",
+        "text": "just text",
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
+def test_the_request_sends_the_cached_prefix_not_the_raw_prompt():
+    """Guards the wiring rather than the helpers: both were easy to write and
+    then not pass to `messages.create`, which fails as a bill rather than an
+    error."""
+    import inspect
+
+    from assistant.agent import Assistant
+
+    source = inspect.getsource(Assistant.send)
+    assert "system=SYSTEM_BLOCKS" in source
+    assert "messages=_with_breakpoints(self.messages)" in source
+    assert "system=SYSTEM," not in source, "the uncached system string is being sent"
+
+
+def test_every_call_records_what_it_cost(tmp_path):
+    """Caching that never hits is invisible: no error, just an unchanged bill.
+    `cache_read` staying at zero across a run is the signal, so it has to be
+    written down somewhere durable."""
+    from assistant.agent import Assistant
+    from assistant.audit import AuditLog
+
+    class _Usage:
+        input_tokens = 120
+        output_tokens = 40
+        cache_creation_input_tokens = 9000
+        cache_read_input_tokens = 8000
+
+    class _Response:
+        usage = _Usage()
+
+    agent = Assistant.__new__(Assistant)
+    agent.settings = default_settings()
+    agent.audit = AuditLog(tmp_path / "audit.jsonl")
+    agent._record_usage(_Response())
+
+    entry = json.loads((tmp_path / "audit.jsonl").read_text().strip())
+    assert entry["event"] == "model_usage"
+    assert entry["cache_read"] == 8000
+    assert entry["cache_write"] == 9000
+    assert entry["input"] == 120
+
+
+def test_usage_recording_survives_a_response_without_it(tmp_path):
+    """A missing usage block must not take the sweep down with it. Accounting is
+    worth having, but not worth the briefing."""
+    from assistant.agent import Assistant
+    from assistant.audit import AuditLog
+
+    agent = Assistant.__new__(Assistant)
+    agent.settings = default_settings()
+    agent.audit = AuditLog(tmp_path / "audit.jsonl")
+    agent._record_usage(object())
+
+    assert not (tmp_path / "audit.jsonl").exists() or not (tmp_path / "audit.jsonl").read_text()

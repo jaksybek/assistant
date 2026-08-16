@@ -75,6 +75,68 @@ Deleting always needs their approval, by design; never work around that.
 Be direct. Say what you did, what you could not do, and what needs the user."""
 
 
+# Prompt caching. The request prefix renders as tools -> system -> messages, and
+# a breakpoint caches everything before it, so ONE marker on the system block
+# covers both the tool definitions and this prompt — the largest fixed thing we
+# send, and we send it again on every iteration of every loop.
+#
+# The system text is a module constant with nothing interpolated into it, which
+# is what makes this work at all. A date, a mode or a user name spliced in here
+# would sit at the front of the prefix and invalidate everything downstream on
+# every request. Dynamic context belongs in `messages`, after the cached prefix.
+CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
+
+SYSTEM_BLOCKS: list[dict[str, Any]] = [
+    {"type": "text", "text": SYSTEM, "cache_control": dict(CACHE_CONTROL)}
+]
+
+
+def _marked(message: dict[str, Any]) -> dict[str, Any]:
+    """A copy of `message` with a cache breakpoint on its last content block.
+
+    Copies rather than mutates. The stored history must stay free of markers:
+    breakpoints roll forward every turn, and a mutated history would accumulate
+    them past the limit of four per request.
+    """
+    content = message["content"]
+    if isinstance(content, str):
+        block = {"type": "text", "text": content, "cache_control": dict(CACHE_CONTROL)}
+        return {**message, "content": [block]}
+    if not content:
+        return message
+    blocks = list(content)
+    last = blocks[-1]
+    if not isinstance(last, dict):
+        # An SDK response block, not a plain dict. Only assistant turns hold
+        # those, and we never place a breakpoint on one, so this is a guard
+        # rather than a case — leave it untouched rather than guess its shape.
+        return message
+    blocks[-1] = {**last, "cache_control": dict(CACHE_CONTROL)}
+    return {**message, "content": blocks}
+
+
+def _with_breakpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The conversation, with rolling cache breakpoints on the last two user turns.
+
+    The static prefix is only half the saving. In a tool loop the conversation
+    itself is re-sent whole on every iteration and grows with each one, so by
+    the tenth call the history costs more than the system prompt ever did.
+    A breakpoint on the newest turn means the next call reads all of it back
+    instead of paying for it again.
+
+    Two markers rather than one because a breakpoint only searches back twenty
+    content blocks for an earlier entry. One iteration that fires half a dozen
+    tools emits an assistant turn plus that many tool results, and a couple of
+    those in a row can push the previous marker out of reach. The older of the
+    two is the anchor that keeps the chain intact when that happens.
+    """
+    marked = list(messages)
+    users = [i for i, message in enumerate(marked) if message.get("role") == "user"]
+    for index in users[-2:]:
+        marked[index] = _marked(marked[index])
+    return marked
+
+
 # Environment variables that carry a credential. A subprocess inherits the
 # whole environment unless you stop it, so every server was being handed every
 # secret the agent owns — the notes server, which only ever touches markdown
@@ -177,12 +239,13 @@ class Assistant:
             response = await self.client.messages.create(
                 model=self.settings.model,
                 max_tokens=self.settings.max_tokens,
-                system=SYSTEM,
-                messages=self.messages,
+                system=SYSTEM_BLOCKS,
+                messages=_with_breakpoints(self.messages),
                 tools=self._tools,
                 thinking={"type": "adaptive"},
                 output_config={"effort": self.settings.effort},
             )
+            self._record_usage(response)
 
             if response.stop_reason == "refusal":
                 self.audit.record("refusal", stop_details=str(response.stop_details))
@@ -198,6 +261,30 @@ class Assistant:
                 if block.type == "tool_use":
                     results.append(await self._dispatch(block))
             self.messages.append({"role": "user", "content": results})
+
+    def _record_usage(self, response: Any) -> None:
+        """Write what this call cost to the audit log.
+
+        Without this the caching above is unfalsifiable: a breakpoint that never
+        hits fails silently — no error, just a bill that does not go down. The
+        number to watch is `cache_read`. If it stays at zero across a run whose
+        prefix should be identical, something upstream is changing the bytes.
+
+        Note that `input` is only the uncached remainder, not the prompt size:
+        the whole prompt is `input + cache_write + cache_read`. Reading `input`
+        alone after this change makes the loop look far cheaper than it is.
+        """
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        self.audit.record(
+            "model_usage",
+            model=self.settings.model,
+            input=getattr(usage, "input_tokens", 0) or 0,
+            output=getattr(usage, "output_tokens", 0) or 0,
+            cache_write=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            cache_read=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        )
 
     async def _dispatch(self, block: Any) -> dict[str, Any]:
         """Gate, then run, a single tool call."""
