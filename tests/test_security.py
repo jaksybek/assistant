@@ -1760,3 +1760,74 @@ def test_usage_recording_survives_a_response_without_it(tmp_path):
     agent._record_usage(object())
 
     assert not (tmp_path / "audit.jsonl").exists() or not (tmp_path / "audit.jsonl").read_text()
+
+
+# -- where a recording's note lands ------------------------------------------
+#
+# The vault was reorganised 2026-10-07: recordings are split by what the
+# conversation is, and Bek's own inner work left `Recordings/` entirely for
+# `Личное/Сессии/`. That folder is not a topic — it is the access boundary for
+# outside agents (an IFS coach, and whatever follows). Everything below guards
+# a property of that boundary, not a preference about filing.
+
+
+def test_deduplication_looks_in_both_places():
+    """The sweep decides what is new by listing the notes that exist. When notes
+    started landing in two folders, listing one of them silently became a
+    rediscovery loop: every personal session looks new every night, and a second
+    note gets written, and a third."""
+    from assistant.nightly import RECORDINGS
+
+    assert "BOTH 'Recordings' and 'Личное/Сессии'" in RECORDINGS
+    assert "write again tomorrow" in RECORDINGS
+
+
+def test_the_two_destinations_are_both_named():
+    from assistant.nightly import RECORDINGS
+
+    assert "'Личное/Сессии/<YYYY-MM-DD> — <title>'" in RECORDINGS
+    assert "'Recordings/<subfolder>/<YYYY-MM-DD> — <title>'" in RECORDINGS
+
+
+def test_every_recordings_subfolder_is_named():
+    """A subfolder the prompt does not name is a subfolder the model invents a
+    neighbour for, and the tree grows a parallel scheme."""
+    from assistant.nightly import RECORDINGS
+
+    for folder in ("Трекинг и консультации", "Встречи", "Обучение", "Шум"):
+        assert f"'{folder}'" in RECORDINGS, folder
+
+
+def test_an_unclear_recording_goes_to_the_folder_that_leaks_nothing():
+    """The two misfilings do not cost the same, and the prompt has to say so.
+
+    Personal session filed as work: harder to find, nothing else happens.
+    Client session filed as personal: handed to whatever agent reads
+    `Личное/Сессии/` — somebody else's money and somebody else's problems.
+
+    So the tie-break is not 'guess better', it is 'guess toward Recordings'.
+    """
+    from assistant.nightly import RECORDINGS
+
+    assert "When you cannot tell, choose 'Recordings'" in RECORDINGS
+    assert "do not cost the same" in RECORDINGS
+    assert "leaks nothing" in RECORDINGS
+
+
+def test_routing_is_decided_by_content_not_by_filename():
+    """The first pass over the existing 136 recordings classified by title and
+    got it wrong: in the Limitless files 'Встреча' was a source marker, and one
+    of them turned out to be a psychotherapy session. Plaud titles are worse —
+    arbitrary, and sometimes absent."""
+    from assistant.nightly import RECORDINGS
+
+    assert "by what the conversation IS, not by what the file is called" in RECORDINGS
+
+
+def test_a_psychology_lecture_is_study_material_not_a_session():
+    """The nearest boundary case, and the one that decides whether the coach's
+    folder stays a folder of sessions. A lecture about separation from parents
+    is deeply relevant to inner work and still is not inner work."""
+    from assistant.nightly import RECORDINGS
+
+    assert "A lecture ON psychology belongs here" in RECORDINGS
