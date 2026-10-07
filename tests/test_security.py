@@ -1831,3 +1831,120 @@ def test_a_psychology_lecture_is_study_material_not_a_session():
     from assistant.nightly import RECORDINGS
 
     assert "A lecture ON psychology belongs here" in RECORDINGS
+
+
+# -- the sessions mirror -----------------------------------------------------
+#
+# `Личное/Сессии/` is handed to outside agents — an IFS coach today, others
+# later. A GitHub connector takes a repository and not a subdirectory, so the
+# folder is mirrored into a repository of its own; otherwise "read my sessions"
+# and "read my clients' sessions" are the same grant.
+
+
+@pytest.fixture
+def mirror(tmp_path, monkeypatch):
+    """A state checkout with one personal note, and an empty mirror beside it."""
+    from assistant import cron
+
+    state = tmp_path / "state"
+    (state / cron.SHARE_SOURCE).mkdir(parents=True)
+    (state / cron.SHARE_SOURCE / "2026-09-07 — Сессия.md").write_text("своё", encoding="utf-8")
+    share = tmp_path / "share"
+    share.mkdir()
+    monkeypatch.setattr(cron, "WORKDIR", state)
+    monkeypatch.setattr(cron, "SHARE_DIR", share)
+    monkeypatch.setenv("ASSISTANT_SESSIONS_REPO", "jaksybek/sessions")
+    monkeypatch.setenv("ASSISTANT_SESSIONS_TOKEN", "github_pat_mirror")
+    calls: list[tuple] = []
+    monkeypatch.setattr(cron, "_git", lambda *a, **kw: calls.append(a) or "")
+    return cron, state, share, calls
+
+
+def test_a_note_removed_from_the_folder_disappears_from_the_mirror(mirror):
+    """The security-bearing half, and the one a merge-style copy would miss.
+
+    A client's session filed as personal by mistake, then moved out, must stop
+    being handed to whatever agent reads the mirror. A copy that only adds
+    would keep serving it forever, and nothing would look wrong anywhere.
+    """
+    cron, state, share, _ = mirror
+    stale = share / "2026-08-27 — Клиент.md"
+    stale.write_text("чужое", encoding="utf-8")
+
+    cron.mirror_sessions()
+
+    assert not stale.exists()
+    assert (share / "2026-09-07 — Сессия.md").read_text(encoding="utf-8") == "своё"
+
+
+def test_only_markdown_from_that_one_folder_travels(mirror):
+    """Attachments and anything outside the folder stay in the vault. The
+    mirror is a reading surface for an agent, not a backup."""
+    cron, state, share, _ = mirror
+    (state / cron.SHARE_SOURCE / "скан.jpg").write_bytes(b"\xff\xd8\xff")
+    (state / "Recordings").mkdir()
+    (state / "Recordings" / "клиент.md").write_text("чужое", encoding="utf-8")
+
+    cron.mirror_sessions()
+
+    assert not (share / "скан.jpg").exists()
+    assert not (share / "клиент.md").exists()
+    assert not (share / "Recordings").exists()
+
+
+def test_the_mirror_says_it_is_a_copy(mirror):
+    """Someone will eventually edit the mirror instead of the vault. The next
+    sweep overwrites it without asking, so the repository has to say so where
+    they will be standing when they do it."""
+    cron, state, share, _ = mirror
+
+    cron.mirror_sessions()
+    readme = (share / "README.md").read_text(encoding="utf-8")
+
+    assert "копия, а не оригинал" in readme
+    assert "сотрёт" in readme
+
+
+def test_no_mirror_configured_is_not_a_failure(tmp_path, monkeypatch):
+    """Absence is a choice. Before the repository exists the sweep still runs."""
+    from assistant import cron
+
+    monkeypatch.delenv("ASSISTANT_SESSIONS_REPO", raising=False)
+    assert "not configured" in cron.mirror_sessions()
+
+
+def test_a_configured_mirror_without_a_token_is_loud(monkeypatch):
+    """Half-configured is the state that fails silently later: the repository
+    named, nothing to push with. Better to say it now."""
+    from assistant import cron
+
+    monkeypatch.setenv("ASSISTANT_SESSIONS_REPO", "jaksybek/sessions")
+    monkeypatch.delenv("ASSISTANT_SESSIONS_TOKEN", raising=False)
+    monkeypatch.delenv("ASSISTANT_STATE_TOKEN", raising=False)
+    with pytest.raises(RuntimeError, match="no token"):
+        cron.mirror_sessions()
+
+
+def test_the_state_token_is_accepted_when_it_covers_both(monkeypatch):
+    """A fine-grained token can carry two repositories. Demanding a second one
+    for no reason is how an operator comes to skip the step."""
+    from assistant import cron
+
+    monkeypatch.setenv("ASSISTANT_SESSIONS_REPO", "jaksybek/sessions")
+    monkeypatch.delenv("ASSISTANT_SESSIONS_TOKEN", raising=False)
+    monkeypatch.setenv("ASSISTANT_STATE_TOKEN", "github_pat_state")
+    assert cron._share_remote().endswith("jaksybek/sessions.git")
+
+
+def test_a_broken_mirror_never_costs_the_briefing():
+    """The mirror is downstream of everything and owed nothing. A repository
+    that is renamed, deleted or unreachable must not take down a sweep that
+    already ran — the same rule the calendar and Drive checks follow."""
+    import inspect
+
+    from assistant import cron
+
+    source = inspect.getsource(cron.main)
+    assert "mirror_sessions()" in source
+    assert "[share] skipped" in source
+    assert source.index("push_state()") < source.index("mirror_sessions()")
