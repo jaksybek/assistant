@@ -1847,6 +1847,7 @@ def mirror(tmp_path, monkeypatch):
     from assistant import cron
 
     state = tmp_path / "state"
+    (state / ".git").mkdir(parents=True)
     (state / cron.SHARE_SOURCE).mkdir(parents=True)
     (state / cron.SHARE_SOURCE / "2026-09-07 — Сессия.md").write_text("своё", encoding="utf-8")
     share = tmp_path / "share"
@@ -1948,3 +1949,52 @@ def test_a_broken_mirror_never_costs_the_briefing():
     assert "mirror_sessions()" in source
     assert "[share] skipped" in source
     assert source.index("push_state()") < source.index("mirror_sessions()")
+
+
+def test_an_emptied_folder_empties_the_mirror(mirror):
+    """Raised in review of PR #23, and it broke the invariant the mirror exists
+    for: git does not keep empty directories, so moving the LAST session out
+    makes the folder vanish from the checkout entirely. Returning early there
+    would leave every note published so far readable for good — the failure
+    being invisible is what makes it worth a test."""
+    import shutil
+
+    cron, state, share, _ = mirror
+    (share / "2026-09-07 — Сессия.md").write_text("старое", encoding="utf-8")
+    shutil.rmtree(state / cron.SHARE_SOURCE)
+
+    result = cron.mirror_sessions()
+
+    assert not (share / "2026-09-07 — Сессия.md").exists()
+    assert (share / "README.md").exists(), "the mirror stays explained even when empty"
+    assert "0 notes" in result
+
+
+def test_a_missing_state_checkout_is_loud(mirror):
+    """The other direction, and the reason emptiness alone cannot be the
+    signal: a run whose checkout never arrived would otherwise wipe a perfectly
+    good mirror and report success."""
+    import shutil
+
+    cron, state, share, _ = mirror
+    shutil.rmtree(state / ".git")
+
+    with pytest.raises(RuntimeError, match="state checkout missing"):
+        cron.mirror_sessions()
+
+
+def test_the_fetch_result_is_read_from_rev_parse_not_from_fetch():
+    """Raised in review of PR #23. `git fetch` reports on stderr and leaves
+    stdout empty, so branching on its output always reads as failure — the
+    reset gets skipped, an unrelated root commit is made, the push is refused
+    as non-fast-forward, and main() swallows it. On a stateless host the mirror
+    directory never survives a run, so this path is taken EVERY time: the
+    mirror would publish once and freeze, with nothing in the log looking
+    wrong."""
+    import inspect
+
+    from assistant import cron
+
+    source = inspect.getsource(cron.mirror_sessions)
+    assert 'if _git("rev-parse", "--verify", "--quiet", "origin/main"' in source
+    assert 'if _git("fetch"' not in source, "the fetch result is being branched on again"

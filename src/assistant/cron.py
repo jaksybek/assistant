@@ -165,24 +165,40 @@ def mirror_sessions() -> str:
     if remote is None:
         return "sessions mirror: not configured"
 
-    source = WORKDIR / SHARE_SOURCE
-    if not source.is_dir():
-        return f"sessions mirror: {SHARE_SOURCE} is absent, nothing to mirror"
+    # A missing state checkout is a broken run, not an empty folder — say so
+    # rather than mirroring emptiness over a good repository.
+    if not (WORKDIR / ".git").is_dir():
+        raise RuntimeError(f"state checkout missing at {WORKDIR}; refusing to mirror")
 
-    if (SHARE_DIR / ".git").exists():
-        _git("remote", "set-url", "origin", remote, cwd=SHARE_DIR)
-        _git("fetch", "--depth", "1", "origin", "main", cwd=SHARE_DIR)
-        _git("reset", "--hard", "origin/main", cwd=SHARE_DIR)
-    else:
+    # An ABSENT source folder is an EMPTY one, and must be mirrored as empty.
+    # Git does not keep empty directories, so moving the last note out makes
+    # the folder vanish from the checkout. Returning early there would leave
+    # every note published so far readable for good — the exact invariant this
+    # function exists to hold.
+    source = WORKDIR / SHARE_SOURCE
+
+    if not (SHARE_DIR / ".git").exists():
         SHARE_DIR.mkdir(parents=True, exist_ok=True)
         _git("init", "-q", "-b", "main", cwd=SHARE_DIR)
         _git("remote", "add", "origin", remote, cwd=SHARE_DIR)
         _git("config", "user.email", "assistant@localhost", cwd=SHARE_DIR)
         _git("config", "user.name", "assistant", cwd=SHARE_DIR)
-        # An empty repository has no main to fetch; that is the first run, not
-        # an error, so this one is allowed to fail.
-        if _git("fetch", "--depth", "1", "origin", "main", cwd=SHARE_DIR, check=False):
-            _git("reset", "--hard", "origin/main", cwd=SHARE_DIR)
+    else:
+        _git("remote", "set-url", "origin", remote, cwd=SHARE_DIR)
+
+    # A brand-new repository has no `main` to fetch, and that is the first run
+    # rather than a fault — so the fetch may fail. What must NOT be guessed is
+    # whether it worked: `git fetch` reports on stderr and leaves stdout empty,
+    # so testing its output always reads as failure. On a stateless host this
+    # directory never survives a run, every run takes the branch above, and the
+    # reset would be skipped every time: an unrelated root commit, a push
+    # refused as non-fast-forward, and a mirror frozen at its first publication
+    # with nothing in the log that looks wrong.
+    #
+    # `git rev-parse` does print to stdout, so ask it whether the ref arrived.
+    _git("fetch", "--depth", "1", "origin", "main", cwd=SHARE_DIR, check=False)
+    if _git("rev-parse", "--verify", "--quiet", "origin/main", cwd=SHARE_DIR, check=False):
+        _git("reset", "--hard", "origin/main", cwd=SHARE_DIR)
 
     for path in SHARE_DIR.iterdir():
         if path.name == ".git":
@@ -190,7 +206,7 @@ def mirror_sessions() -> str:
         shutil.rmtree(path) if path.is_dir() else path.unlink()
 
     copied = 0
-    for note in sorted(source.rglob("*.md")):
+    for note in sorted(source.rglob("*.md")) if source.is_dir() else []:
         target = SHARE_DIR / note.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(note, target)
