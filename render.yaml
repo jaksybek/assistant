@@ -40,6 +40,15 @@ services:
         sync: false
       - key: ASSISTANT_STATE_DIR
         value: /tmp/assistant-state
+      # Mirror of the personal-sessions folder, for outside agents to read.
+      # Absent means no mirror — not an error. Declared only on the nightly
+      # job: the approvals job never writes notes, so it has nothing to mirror.
+      - key: ASSISTANT_SESSIONS_REPO
+        sync: false
+      - key: ASSISTANT_SESSIONS_TOKEN
+        sync: false
+      - key: ASSISTANT_SHARE_DIR
+        value: /tmp/assistant-sessions
       # Nobody is watching: gated actions queue instead of blocking
       - key: ASSISTANT_MODE
         value: autonomous
